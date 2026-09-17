@@ -1,0 +1,7 @@
+/build/
+/trials/
+*.user
+/pkgbuild/pkg/
+/pkgbuild/src/
+/pkgbuild/*.pkg.tar.*
+__pycache__/

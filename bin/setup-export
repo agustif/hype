@@ -1,0 +1,5 @@
+#!/bin/sh
+set -eu
+ROOT="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
+python -m venv "$ROOT/build/python"
+"$ROOT/build/python/bin/python" -m pip install 'python-pptx==1.0.2'

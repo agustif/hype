@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Hype
+Comment=Markdown presentations
+Exec=hype %f
+Icon=hype
+Terminal=false
+Categories=Office;Presentation;
+MimeType=text/markdown;

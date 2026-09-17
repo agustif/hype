@@ -1,0 +1,29 @@
+#!/bin/sh
+# Generates private local trial decks. Existing trial Markdown is never overwritten.
+set -eu
+ROOT="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
+PRESENTATIONS="${1:-$HOME/Dropbox/Documents/Presentations}"
+WORK="$(mktemp -d)"
+trap 'rm -rf "$WORK"' EXIT
+cd "$ROOT"
+for YEAR in 2023 2024 2025; do
+  if test -f "trials/rails-world-$YEAR/presentation.md"; then
+    echo "trials/rails-world-$YEAR already exists; refusing to overwrite edited trials." >&2
+    exit 1
+  fi
+done
+PYTHON="$ROOT/build/python/bin/python"
+KEYNOTE="$ROOT/build/python/bin/keynote-parser"
+test -x "$PYTHON" && test -x "$KEYNOTE" || {
+  echo 'Run bin/setup-export, then build/python/bin/python -m pip install -r tools/requirements-trials.txt' >&2
+  exit 1
+}
+SAL_USE_VCLPLUGIN=svp libreoffice "-env:UserInstallation=file://$WORK/lo" --headless --convert-to pptx --outdir "$WORK" "$PRESENTATIONS/2023/Rails World/Rails World 2024.key"
+"$KEYNOTE" unpack "$PRESENTATIONS/2023/Rails World/Rails World 2024.key" --output "$WORK/keynote"
+"$PYTHON" tools/import_trial.py "$WORK/Rails World 2024.pptx" trials/rails-world-2023 --year 2023
+"$PYTHON" tools/import_trial.py "$PRESENTATIONS/2024/Rails World 2024/Rails World 2024.pptx" trials/rails-world-2024 --year 2024
+"$PYTHON" tools/import_trial.py "$PRESENTATIONS/2025/Rails World 2025/Presentation/Rails World 2025.pptx" trials/rails-world-2025 --year 2025
+"$PYTHON" tools/refine_trials.py --keynote-unpacked "$WORK/keynote" --originals "$PRESENTATIONS"
+for YEAR in 2023 2024 2025; do
+  QT_QPA_PLATFORM=offscreen QT_QPA_PLATFORMTHEME=generic QT_STYLE_OVERRIDE=Fusion ./build/hype "trials/rails-world-$YEAR/presentation.md" --theme tokyo-night --save
+done
