@@ -895,7 +895,7 @@ bool Deck::renderImages(const QString &directory, int width, bool convertAnimati
 }
 bool Deck::exportPptx(const QString &path) {
     QTemporaryDir temp;
-    if (!renderImages(temp.path(), 1920, true))
+    if (!renderImages(temp.path(), 3840, true))
         return false;
     QString error;
     if (!writePptx(temp.path() + "/slides.json", path, &error)) {

@@ -75,6 +75,11 @@ class ExportTests(unittest.TestCase):
                     self.assertEqual(sizes, (entry.CRC, entry.compress_size, entry.file_size))
             presentation = ET.fromstring(archive.read('ppt/presentation.xml'))
             self.assertEqual(len(presentation.findall('p:sldIdLst/p:sldId', NS)), 2)
+            self.assertEqual(presentation.get('autoCompressPictures'), '0')
+            images = [name for name in archive.namelist() if name.endswith('.png')]
+            self.assertEqual(len(images), 2)
+            for name in images:
+                self.assertEqual(struct.unpack('>II', archive.read(name)[16:24]), (3840, 2160))
             size = presentation.find('p:sldSz', NS)
             self.assertAlmostEqual(int(size.get('cx')) / int(size.get('cy')), 16 / 9, places=5)
             core = ET.fromstring(archive.read('docProps/core.xml'))
@@ -149,7 +154,7 @@ class ExportTests(unittest.TestCase):
         info = json.loads(probe.stdout)
         self.assertEqual(info['streams'][0]['codec_name'], 'h264')
         self.assertEqual(info['streams'][0]['pix_fmt'], 'yuv420p')
-        self.assertEqual((info['streams'][0]['width'], info['streams'][0]['height']), (1920, 1080))
+        self.assertEqual((info['streams'][0]['width'], info['streams'][0]['height']), (3840, 2160))
         self.assertEqual(len(info['streams']), 1)
         return target, xml, info
 

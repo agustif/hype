@@ -123,7 +123,7 @@ Colors and the font choice are saved in the Markdown file. Install the same font
 
 Click **Present** or press **F5** to go fullscreen. Use the arrows to navigate, Space to play or pause video, and Escape to return to editing.
 
-Choose **Export → PDF** or **PowerPoint** to share your presentation. Both exports are built into Hype. PowerPoint slides preserve the rendered appearance rather than exposing editable text and shapes; the receiving computer does not need your fonts installed. Videos are embedded, and animated WebP/GIF images are converted to MP4 automatically without changing the original files. PDF captures still slides.
+Choose **Export → PDF** or **PowerPoint** to share your presentation. Both exports are built into Hype. PowerPoint renders slides and converted animations at 4K (3840 × 2160). Slides preserve the rendered appearance rather than exposing editable text and shapes; the receiving computer does not need your fonts installed. Videos are embedded, and animated WebP/GIF images are converted to MP4 automatically without changing the original files. PDF captures still slides.
 
 For PowerPoint video, use H.264 MP4 with optional AAC audio. Use `fit` for videos that aren’t 16:9. Video autoplay and looping may vary between presentation apps; playback in Microsoft PowerPoint has not yet been verified.
 

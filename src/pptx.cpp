@@ -459,6 +459,7 @@ bool writePptx(const QString &manifestPath, const QString &destination, QString 
         }));
     put("ppt/presentation.xml", xml([&](Writer &x) {
             presentationRoot(x, "p:presentation");
+            x.writeAttribute("autoCompressPictures", "0");
             start(x, "p:sldMasterIdLst");
             element(x, "p:sldMasterId", {{"id", "2147483648"}, {"r:id", "rId1"}});
             x.writeEndElement();
