@@ -7,7 +7,23 @@ A small native Markdown presentation editor for Omarchy. The first working build
 ./build/hype examples/welcome.md
 ```
 
+For development, run `./bin/install-dev` once to add **Hype (Development)** to the
+app launcher. It points to this checkout and runs an incremental build on every
+launch. Build failures produce a notification and a log at `build/dev-build.log`;
+runtime output goes to `build/dev-run.log`. Existing windows keep their running
+version, so close and reopen them after changes. You can also run `./bin/dev`
+directly, with the same arguments as `build/hype`.
+
+Launching without a filename reopens the last presentation you opened or saved.
+If that file is no longer available, Hype starts a new presentation.
+
 The visual editor has slides on the left and a preview on the right. Drag thumbnails to reorder their Markdown blocks. In Visual mode, the selected slide’s Markdown is always visible below the preview; drag the divider to resize it. Add, duplicate, delete, undo, and edit without switching modes. Switch to Markdown for the full document; the selected slide’s source opens at the top. Images and videos are copied beside the document into `images/` and `videos/`.
+
+Paste an image or a copied image/video file with Ctrl+V in either view. Hype asks
+for a filename, saves it in `images/` or `videos/`, and inserts its Markdown into
+the selected slide. Existing slide media is replaced while the text is kept.
+Clipboard images become PNGs; copied files keep their format. For a new
+presentation, save the Markdown file first when prompted.
 
 ```markdown
 # A big idea
@@ -78,13 +94,17 @@ Plain line breaks are preserved on slides: put each point or city on its own lin
 
 - Ctrl+E: toggle Visual / full-document Markdown.
 - Sidebar wheel: select the next/previous slide and update the preview.
+- Drag sidebar slides to reorder their Markdown blocks; hold near the top or bottom to scroll while dragging.
+- Ctrl+Up/Left or Ctrl+Down/Right: move selected slides earlier or later when not editing text.
+- Shift+arrows or Shift+click: extend the slide selection. Drag, move, duplicate, or delete the selected slides together.
+- Tab / Shift+Tab: switch between the sidebar and the Markdown input in either view.
 - Markdown: Page Up/Down moves a page; Home/End moves to the line boundaries; Ctrl+Home/End moves to the document boundaries. Shift extends the selection.
 - Ctrl+O: open. Ctrl+S: save. Ctrl+Shift+S: save as.
 - Ctrl+Enter: new slide. Ctrl+D: duplicate with the slide list/canvas focused.
 - Delete: remove the selected slide with the slide list/canvas focused.
 - Ctrl+Z / Ctrl+Shift+Z: document undo/redo.
-- Ctrl+V: paste an image with the canvas focused.
-- Left/Right or Page Up/Down: previous/next slide in the visual editor or presentation. Home/End: first/last slide. Text fields keep their text-navigation behavior.
+- Ctrl+V: paste and name an image or video; ordinary text pastes normally in the editors.
+- Arrow keys: previous/next slide in the visual editor or presentation. Page Up/Down: jump five slides. Home/End: first/last slide. Text fields keep their text-navigation behavior.
 - F5: present. Space: play/pause video. Escape: leave presentation.
 
 ## Development

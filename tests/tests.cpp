@@ -1,26 +1,92 @@
 #include "deck.h"
 #include "renderer.h"
 #include "syntax.h"
+#include <QApplication>
+#include <QClipboard>
 #include <QFile>
 #include <QImage>
+#include <QMimeData>
 #include <QPainter>
 #include <QPdfDocument>
 #include <QQmlApplicationEngine>
 #include <QQmlContext>
 #include <QQuickStyle>
 #include <QQuickWindow>
+#include <QSettings>
 #include <QTemporaryDir>
 #include <QTextCursor>
 #include <QtTest>
 
 class HypeTests : public QObject {
     Q_OBJECT
+    QTemporaryDir settingsDirectory;
     static void write(const QString &path, const QString &content) {
         QFile f(path);
         QVERIFY(f.open(QIODevice::WriteOnly));
         f.write(content.toUtf8());
     }
   private slots:
+    void initTestCase() {
+        QVERIFY(settingsDirectory.isValid());
+        QSettings::setPath(QSettings::IniFormat, QSettings::UserScope, settingsDirectory.path());
+    }
+    void remembersPresentationDirectory() {
+        QTemporaryDir files;
+        const QString opened = files.path() + "/opened";
+        const QString saved = files.path() + "/saved";
+        QVERIFY(QDir().mkpath(opened));
+        QVERIFY(QDir().mkpath(saved));
+        write(opened + "/talk.md", "# Hello\n");
+        Deck first;
+        QVERIFY(first.loadPath(opened + "/talk.md"));
+        Deck next;
+        QCOMPARE(next.dialogDirectory(), opened);
+        QVERIFY(first.savePath(saved + "/copy.md"));
+        QCOMPARE(next.dialogDirectory(), saved);
+        QVERIFY(!first.loadPath(files.path() + "/missing/talk.md"));
+        QVERIFY(!first.savePath(files.path() + "/missing/copy.md"));
+        QCOMPARE(next.dialogDirectory(), saved);
+        QSettings persisted(QSettings::IniFormat, QSettings::UserScope, "hype", "hype");
+        QCOMPARE(persisted.value("files/lastDirectory").toString(), saved);
+        QVERIFY(QFile::exists(persisted.fileName()));
+        QVERIFY(QDir(saved).removeRecursively());
+        QVERIFY(next.dialogDirectory() != saved);
+        QVERIFY(QDir(next.dialogDirectory()).exists());
+    }
+    void reopensLastPresentation() {
+        QSettings settings(QSettings::IniFormat, QSettings::UserScope, "hype", "hype");
+        settings.remove("files/lastPresentation");
+        Deck first;
+        const QString initial = first.source();
+        QVERIFY(!first.reopenLastPresentation());
+        QCOMPARE(first.source(), initial);
+
+        QTemporaryDir files;
+        const QString original = files.path() + "/original.md";
+        const QString copy = files.path() + "/saved copy.md";
+        write(original, "# Last presentation\n");
+        QVERIFY(first.loadPath(original));
+        Deck reopened;
+        QVERIFY(reopened.reopenLastPresentation());
+        QCOMPARE(reopened.path(), original);
+        QCOMPARE(reopened.source(), first.source());
+        QVERIFY(!reopened.dirty());
+
+        first.editSlide("# Saved copy\n");
+        QVERIFY(first.savePath(copy));
+        QVERIFY(!first.loadPath(files.path() + "/missing.md"));
+        QVERIFY(!first.savePath(files.path() + "/missing/copy.md"));
+        Deck saved;
+        QVERIFY(saved.reopenLastPresentation());
+        QCOMPARE(saved.path(), copy);
+        QCOMPARE(saved.source(), first.source());
+
+        QVERIFY(QFile::remove(copy));
+        Deck missing;
+        QVERIFY(!missing.reopenLastPresentation());
+        QVERIFY(missing.path().isEmpty());
+        QCOMPARE(missing.source(), initial);
+    }
     void fencesAndFrontMatter() {
         QString source = "---\ntitle: Test\n---\n\n# "
                          "One\n\n---\n\n````ruby\n---\n```\n````\n\n---\n\n~~~sh\n---\n~~~\n";
@@ -49,16 +115,16 @@ class HypeTests : public QObject {
         QString third = d.slide(2), second = d.slide(1);
         d.moveSlide(2, 0);
         QCOMPARE(d.selected(), 0);
-        QVERIFY(d.slide(0).startsWith(third));
-        QCOMPARE(d.slide(2), second);
+        QCOMPARE(d.slide(0).trimmed(), third.trimmed());
+        QCOMPARE(d.slide(2).trimmed(), second.trimmed());
         d.undo();
         QCOMPARE(d.source(), original);
         d.redo();
-        QVERIFY(d.slide(0).startsWith(third));
+        QCOMPARE(d.slide(0).trimmed(), third.trimmed());
         d.select(2);
         d.duplicateSlide();
         QCOMPARE(d.count(), 4);
-        QCOMPARE(d.slide(2), d.slide(3));
+        QCOMPARE(d.slide(2).trimmed(), d.slide(3).trimmed());
         d.addSlide();
         QCOMPARE(d.count(), 5);
         QVERIFY(d.slideSource().trimmed().isEmpty());
@@ -80,6 +146,94 @@ class HypeTests : public QObject {
         d.editSlide("# Changed");
         QCOMPARE(d.count(), 2);
         QCOMPARE(d.slide(1), QString("# Two\n"));
+    }
+    void singleSlideEditorPadding() {
+        Deck d;
+        const QString original =
+            "# First\n\n---\n\n\n    indented  \n\nparagraph  \n\n\n---\n\n# Last\n";
+        d.editSource(original);
+        d.select(1);
+        const QString content = "    indented  \n\nparagraph  ";
+        QCOMPARE(d.slideText(), content);
+        QCOMPARE(d.source(), original); // Viewing a slide doesn't rewrite the document.
+        d.editSlide(content + "more");
+        QCOMPARE(d.slideText(), content + "more");
+        QCOMPARE(d.source(),
+                 "# First\n\n---\n\n    indented  \n\nparagraph  more\n\n---\n\n# Last\n");
+        QCOMPARE(d.count(), 3);
+        d.undo();
+        QCOMPARE(d.source(), original);
+        d.editSlide("");
+        QCOMPARE(d.slideText(), QString());
+        QCOMPARE(d.source(), "# First\n\n---\n\n---\n\n# Last\n");
+        QCOMPARE(d.count(), 3);
+        d.editSource("---\r\ntitle: CRLF\r\n---\r\n\r\n# Title\r\n\r\n---\r\n\r\n# Next\r\n");
+        d.select(0);
+        QCOMPARE(d.slideText(), "# Title");
+        d.editSource("# One slide\n");
+        QCOMPARE(d.slideText(), "# One slide");
+        d.editSlide("# Changed\n\n");
+        QCOMPARE(d.source(), "# Changed\n");
+    }
+    void slideRangeOperations() {
+        Deck d;
+        const QString original = "---\ntitle: Ranges\n---\n# A\n---\n# B\n![](photo.png)\n"
+                                 "---\n# C\n```text\n---\n```\n---\n# D\n---\n# E\n";
+        d.editSource(original);
+        const QString b = d.slide(1), c = d.slide(2);
+        d.select(1);
+        d.extendSelection(3);
+        QCOMPARE(d.selectionCount(), 3);
+        d.extendSelection(2);
+        QCOMPARE(d.selectionCount(), 2);
+        QCOMPARE(d.source(), original);
+        d.moveSelection(1);
+        QCOMPARE(d.selectionFirst(), 2);
+        QCOMPARE(d.selectionLast(), 3);
+        QCOMPARE(d.selected(), 3);
+        QCOMPARE(d.slide(2).trimmed(), b.trimmed());
+        QCOMPARE(d.slide(3).trimmed(), c.trimmed());
+        d.undo();
+        QCOMPARE(d.source(), original);
+        QCOMPARE(d.selectionFirst(), 1);
+        QCOMPARE(d.selectionLast(), 2);
+        d.redo();
+        QCOMPARE(d.selectionFirst(), 2);
+        d.dropSelection(0);
+        QCOMPARE(d.slide(0).trimmed(), b.trimmed());
+        QCOMPARE(d.slide(1).trimmed(), c.trimmed());
+        QCOMPARE(d.selectionCount(), 2);
+        const QString atStart = d.source();
+        d.moveSelection(-1);
+        d.dropSelection(1);
+        QCOMPARE(d.source(), atStart);
+
+        d.select(1);
+        d.extendSelection(0); // Preserve the active end of a backward range.
+        d.dropSelection(d.count());
+        QCOMPARE(d.selected(), 3);
+        QCOMPARE(d.selectionLast(), 4);
+        QCOMPARE(d.slide(3).trimmed(), b.trimmed());
+        QCOMPARE(d.slide(4).trimmed(), c.trimmed());
+        d.duplicateSlide();
+        QCOMPARE(d.count(), 7);
+        QCOMPARE(d.selectionFirst(), 5);
+        QCOMPARE(d.selectionLast(), 6);
+        QCOMPARE(d.slide(5).trimmed(), b.trimmed());
+        QCOMPARE(d.slide(6).trimmed(), c.trimmed());
+        d.deleteSlide();
+        QCOMPARE(d.count(), 5);
+        d.undo();
+        QCOMPARE(d.selectionCount(), 2);
+        QCOMPARE(d.count(), 7);
+        d.select(0);
+        d.extendSelection(d.count() - 1);
+        d.deleteSlide();
+        QCOMPARE(d.count(), 1);
+        QCOMPARE(d.selectionCount(), 1);
+        QVERIFY(d.slideSource().trimmed().isEmpty());
+        d.undo();
+        QCOMPARE(d.selectionCount(), 7);
     }
     void deleteLastAndUndo() {
         Deck d;
@@ -132,6 +286,119 @@ class HypeTests : public QObject {
         QVERIFY(slideProblems(source, "/tmp").isEmpty());
         QVERIFY(parseMedia("An inline `![](missing.png)` example.", "/tmp").file.isEmpty());
     }
+    void pasteNamedMedia() {
+        QTemporaryDir tmp;
+        Deck d;
+        d.editSource("# One\n\n---\n\n# Two\n");
+        QVERIFY(d.savePath(tmp.path() + "/talk.md"));
+        d.select(1);
+        const QString before = d.source(), first = d.slide(0);
+        QImage image(20, 12, QImage::Format_RGB32);
+        image.fill(Qt::red);
+        QApplication::clipboard()->setImage(image);
+        QSignalSpy request(&d, &Deck::pasteRequested);
+        QVERIFY(d.pasteMedia());
+        QCOMPARE(request.size(), 1);
+        d.cancelPaste();
+        QCOMPARE(d.source(), before);
+        QVERIFY(!QDir(tmp.path() + "/images").exists());
+        QVERIFY(d.pasteMedia());
+        QVERIFY(d.savePastedMedia("City at night.png").isEmpty());
+        QCOMPARE(QImage(tmp.path() + "/images/City at night.png"), image);
+        QCOMPARE(d.slide(0), first);
+        QCOMPARE(d.selected(), 1);
+        QVERIFY(d.slideSource().contains("# Two"));
+        QCOMPARE(parseMedia(d.slideSource(), tmp.path()).file, "City at night.png");
+        d.undo();
+        QCOMPARE(d.source(), before);
+
+        write(tmp.path() + "/original.webm", "video file bytes");
+        auto files = new QMimeData;
+        files->setUrls({QUrl::fromLocalFile(tmp.path() + "/original.webm")});
+        files->setImageData(image); // File-manager thumbnails must not replace the video.
+        QApplication::clipboard()->setMimeData(files);
+        QVERIFY(d.pasteMedia());
+        QVERIFY(d.savePastedMedia("Demo").isEmpty());
+        QFile video(tmp.path() + "/videos/Demo.webm");
+        QVERIFY(video.open(QIODevice::ReadOnly));
+        QCOMPARE(video.readAll(), QByteArray("video file bytes"));
+        QVERIFY(parseMedia(d.slideSource(), tmp.path()).video);
+        auto raw = new QMimeData;
+        raw->setData("video/mp4", "raw video bytes");
+        QApplication::clipboard()->setMimeData(raw);
+        QVERIFY(d.pasteMedia());
+        QVERIFY(d.savePastedMedia("Second demo").isEmpty());
+        QFile rawVideo(tmp.path() + "/videos/Second demo.mp4");
+        QVERIFY(rawVideo.open(QIODevice::ReadOnly));
+        QCOMPARE(rawVideo.readAll(), QByteArray("raw video bytes"));
+        QVERIFY(!d.slideSource().contains("Demo.webm"));
+        QCOMPARE(parseMedia(d.slideSource(), tmp.path()).file, "Second demo.mp4");
+        QApplication::clipboard()->setText("ordinary text");
+        QVERIFY(!d.pasteMedia());
+    }
+    void pastedSlidesKeepBalancedSpacing() {
+        QTemporaryDir tmp;
+        Deck d;
+        d.editSource("# Start\n");
+        QVERIFY(d.savePath(tmp.path() + "/talk.md"));
+        QImage image(10, 10, QImage::Format_RGB32);
+        image.fill(Qt::red);
+        QApplication::clipboard()->setImage(image);
+        d.addSlide();
+        QVERIFY(d.pasteMedia());
+        QVERIFY(d.savePastedMedia("first").isEmpty());
+        d.addSlide();
+        QVERIFY(d.pasteMedia());
+        QVERIFY(d.savePastedMedia("second").isEmpty());
+        d.addSlide();
+        d.editSlide("# End");
+        const QString expected = "# Start\n\n---\n\n![](<first.png>)\n\n---\n\n"
+                                 "![](<second.png>)\n\n---\n\n# End\n";
+        QCOMPARE(d.source(), expected);
+        d.moveSlide(1, 2);
+        QCOMPARE(d.source(), "# Start\n\n---\n\n![](<second.png>)\n\n---\n\n"
+                             "![](<first.png>)\n\n---\n\n# End\n");
+        d.undo();
+        QCOMPARE(d.source(), expected);
+        d.select(1);
+        QCOMPARE(d.slideText(), "![](<first.png>)");
+        d.addSlide();
+        QCOMPARE(d.count(), 5);
+        QCOMPARE(d.slideText(), QString());
+        QVERIFY(d.source().contains("![](<first.png>)\n\n---\n\n---\n\n![](<second.png>)"));
+    }
+    void pasteValidatesNames() {
+        QTemporaryDir tmp;
+        Deck d;
+        QVERIFY(d.savePath(tmp.path() + "/talk.md"));
+        QVERIFY(QDir().mkpath(tmp.path() + "/images"));
+        write(tmp.path() + "/images/existing.png", "keep existing");
+        QImage image(10, 10, QImage::Format_RGB32);
+        image.fill(Qt::blue);
+        QApplication::clipboard()->setImage(image);
+        QVERIFY(d.pasteMedia());
+        QVERIFY(d.savePastedMedia("../outside").contains("without folders"));
+        QVERIFY(d.savePastedMedia("existing").contains("already exists"));
+        QVERIFY(d.savePastedMedia("new name").isEmpty());
+        QCOMPARE(QImage(tmp.path() + "/images/new name.png"), image);
+        QVERIFY(!QFile::exists(tmp.path() + "/outside.png"));
+        QFile existing(tmp.path() + "/images/existing.png");
+        QVERIFY(existing.open(QIODevice::ReadOnly));
+        QCOMPARE(existing.readAll(), QByteArray("keep existing"));
+        QVERIFY(d.pasteMedia());
+        d.editSlide("# Changed while naming media");
+        QVERIFY(d.savePastedMedia("wrong slide").contains("slide changed"));
+        QVERIFY(!QFile::exists(tmp.path() + "/images/wrong slide.png"));
+        d.cancelPaste();
+    }
+    void replaceSlideMedia() {
+        const QString examples = "<!-- ![](comment.png) -->\n```md\n![](example.png)\n```\n"
+                                 "Inline `![](inline.png)`\n# Title\n";
+        const QString replacement = "![](<new.png>)";
+        QCOMPARE(withMedia(examples + "![fit](old.png)\nCaption", replacement),
+                 examples + replacement + "\nCaption");
+        QCOMPARE(withMedia(examples, replacement), examples + "\n" + replacement + "\n");
+    }
     void visualOperations() {
         if (!qEnvironmentVariableIsSet("HYPE_GUI_TESTS"))
             QSKIP("Set HYPE_GUI_TESTS=1 with local multimedia access");
@@ -150,12 +417,21 @@ class HypeTests : public QObject {
         auto list = window->findChild<QQuickItem *>("thumbnails");
         QVERIFY(list);
         auto a = list->mapToScene(QPointF(100, 50)).toPoint(),
-             b = list->mapToScene(QPointF(100, 340)).toPoint();
+             b = list->mapToScene(QPointF(100, 410)).toPoint();
         QTest::mousePress(window, Qt::LeftButton, Qt::NoModifier, a);
-        QTest::mouseMove(window, b, 100);
+        for (int step = 1; step <= 20; ++step)
+            QTest::mouseMove(window, a + (b - a) * step / 20, 10);
         QTest::mouseRelease(window, Qt::LeftButton, Qt::NoModifier, b);
         QCOMPARE(d.selected(), 2);
         QVERIFY(d.slide(2).contains("# One"));
+        QTest::mousePress(window, Qt::LeftButton, Qt::NoModifier, b);
+        for (int step = 1; step <= 20; ++step)
+            QTest::mouseMove(window, b + (a - b) * step / 20, 10);
+        QTest::mouseRelease(window, Qt::LeftButton, Qt::NoModifier, a);
+        QCOMPARE(d.selected(), 0);
+        QVERIFY(d.slide(0).contains("# One"));
+        d.undo();
+        QCOMPARE(d.selected(), 2);
         auto duplicate = window->findChild<QQuickItem *>("duplicateButton");
         QVERIFY(duplicate);
         QTest::mouseClick(window, Qt::LeftButton, Qt::NoModifier,
@@ -174,6 +450,74 @@ class HypeTests : public QObject {
         QCOMPARE(d.count(), 3);
         d.undo();
         QVERIFY(d.slide(0).contains("# One"));
+        QTemporaryDir pasted;
+        QVERIFY(d.savePath(pasted.path() + "/talk.md"));
+        QImage clipboardImage(12, 12, QImage::Format_RGB32);
+        clipboardImage.fill(Qt::green);
+        QApplication::clipboard()->setImage(clipboardImage);
+        auto pasteTarget = window->findChild<QQuickItem *>("stage");
+        pasteTarget->forceActiveFocus();
+        auto pasteDialog = window->findChild<QObject *>("pasteDialog");
+        auto pasteName = window->findChild<QQuickItem *>("pasteName");
+        QVERIFY(pasteDialog && pasteName);
+        auto submitName = [&](const QString &name) {
+            QTRY_VERIFY(pasteDialog->property("opened").toBool());
+            QVERIFY(pasteName->hasActiveFocus());
+            pasteName->setProperty("text", name);
+            QTest::keyClick(window, Qt::Key_Return);
+            QTRY_VERIFY(!pasteDialog->property("visible").toBool());
+        };
+        QTest::keyClick(window, Qt::Key_V, Qt::ControlModifier);
+        QTRY_VERIFY(pasteDialog->property("opened").toBool());
+        auto frame = window->findChild<QQuickItem *>("slideFrame");
+        auto popupItem = pasteDialog->property("contentItem").value<QQuickItem *>();
+        QVERIFY(frame && popupItem);
+        const QPointF frameCenter =
+            frame->mapToScene(QPointF(frame->width() / 2, frame->height() / 2));
+        const QPointF popupCenter =
+            popupItem->mapToScene(QPointF(popupItem->width() / 2, popupItem->height() / 2));
+        QVERIFY(QLineF(frameCenter, popupCenter).length() < 2);
+        const int pasteSlide = d.selected();
+        QTest::keyClick(window, Qt::Key_PageDown);
+        QCOMPARE(d.selected(), pasteSlide);
+        QTest::keyClick(window, Qt::Key_E, Qt::ControlModifier);
+        QVERIFY(!window->property("markdown").toBool());
+        if (qEnvironmentVariableIsSet("HYPE_PASTE_SCREENSHOT")) {
+            QTest::qWait(100);
+            QVERIFY(window->grabWindow().save(qEnvironmentVariable("HYPE_PASTE_SCREENSHOT")));
+        }
+        submitName("canvas");
+        QCOMPARE(parseMedia(d.slideSource(), pasted.path()).file, "canvas.png");
+        QTRY_VERIFY(pasteTarget->hasActiveFocus());
+        const QString beforeCancel = d.source();
+        QTest::keyClick(window, Qt::Key_V, Qt::ControlModifier);
+        QTRY_VERIFY(pasteDialog->property("opened").toBool());
+        pasteName->setProperty("text", "canvas");
+        QTest::keyClick(window, Qt::Key_Return);
+        QVERIFY(pasteDialog->property("visible").toBool());
+        QVERIFY(pasteDialog->property("error").toString().contains("already exists"));
+        QTest::keyClick(window, Qt::Key_Escape);
+        QTRY_VERIFY(!pasteDialog->property("visible").toBool());
+        QTRY_VERIFY(pasteTarget->hasActiveFocus());
+        QCOMPARE(d.source(), beforeCancel);
+        auto slideText = window->findChild<QQuickItem *>("slideEditor");
+        slideText->forceActiveFocus();
+        QTest::keyClick(window, Qt::Key_V, Qt::ControlModifier);
+        submitName("slide editor");
+        QCOMPARE(parseMedia(d.slideSource(), pasted.path()).file, "slide editor.png");
+        QVERIFY(QMetaObject::invokeMethod(window, "openMarkdown"));
+        QTest::qWait(50);
+        QTest::keyClick(window, Qt::Key_V, Qt::ControlModifier);
+        submitName("document editor");
+        QCOMPARE(parseMedia(d.slideSource(), pasted.path()).file, "document editor.png");
+        auto documentText = window->findChild<QQuickItem *>("sourceEditor");
+        documentText->forceActiveFocus();
+        QApplication::clipboard()->setText("ordinary paste");
+        QTest::keyClick(window, Qt::Key_V, Qt::ControlModifier);
+        QVERIFY(d.source().contains("ordinary paste"));
+        window->requestActivate();
+        QTRY_VERIFY(window->isActive());
+        QTest::keyClick(window, Qt::Key_E, Qt::ControlModifier);
         QString trial = QFINDTESTDATA("../trials/rails-world-2023/presentation.md");
         if (!trial.isEmpty()) {
             QVERIFY(d.loadPath(trial));
@@ -187,21 +531,103 @@ class HypeTests : public QObject {
         }
         QString many;
         for (int i = 0; i < 40; ++i)
-            many += (i ? "\n---\n" : "") + QString("# Slide %1\n").arg(i);
+            many += (i ? "\n\n---\n\n" : "") + QString("# Slide %1").arg(i);
+        many += "\n";
         d.editSource(many);
         d.select(0);
+        QTest::qWait(100);
+        const auto dragStart = list->mapToScene(QPointF(100, 50)).toPoint();
+        const auto dragEnd = list->mapToScene(QPointF(100, list->height() - 10)).toPoint();
+        QTest::mousePress(window, Qt::LeftButton, Qt::NoModifier, dragStart);
+        for (int step = 1; step <= 20; ++step)
+            QTest::mouseMove(window, dragStart + (dragEnd - dragStart) * step / 20, 10);
+        QTRY_VERIFY_WITH_TIMEOUT(list->property("contentY").toDouble() > 900, 5000);
+        QTest::mouseRelease(window, Qt::LeftButton, Qt::NoModifier, dragEnd);
+        QVERIFY(d.selected() > 5);
+        QCOMPARE(d.slideSource().trimmed(), "# Slide 0");
+        QCOMPARE(d.count(), 40);
+        d.undo();
+        QCOMPARE(d.source(), many);
+        QCOMPARE(d.selected(), 0);
         auto stage = window->findChild<QQuickItem *>("stage");
         stage->forceActiveFocus();
+        QTest::keyClick(window, Qt::Key_Down, Qt::ControlModifier);
+        QCOMPARE(d.selected(), 1);
+        QCOMPARE(d.slideSource().trimmed(), "# Slide 0");
+        QTest::keyClick(window, Qt::Key_Right, Qt::ControlModifier);
+        QCOMPARE(d.selected(), 2);
+        QCOMPARE(d.slideSource().trimmed(), "# Slide 0");
+        QTest::keyClick(window, Qt::Key_Up, Qt::ControlModifier);
+        QCOMPARE(d.selected(), 1);
+        QTest::keyClick(window, Qt::Key_Left, Qt::ControlModifier);
+        QCOMPARE(d.selected(), 0);
+        QCOMPARE(d.source(), many);
+        QTest::keyClick(window, Qt::Key_Up, Qt::ControlModifier);
+        QCOMPARE(d.selected(), 0);
+        QCOMPARE(d.source(), many);
+        d.select(d.count() - 1);
+        QTest::keyClick(window, Qt::Key_Down, Qt::ControlModifier);
+        QCOMPARE(d.selected(), d.count() - 1);
+        QCOMPARE(d.source(), many);
+        d.select(0);
+        QTest::keyClick(window, Qt::Key_Down, Qt::ShiftModifier);
+        QCOMPARE(d.selectionCount(), 2);
+        QTest::keyClick(window, Qt::Key_Right, Qt::ShiftModifier);
+        QCOMPARE(d.selectionCount(), 3);
+        QCOMPARE(d.selected(), 2);
+        QTest::keyClick(window, Qt::Key_Up, Qt::ShiftModifier);
+        QCOMPARE(d.selectionCount(), 2);
+        QTest::keyClick(window, Qt::Key_Left, Qt::ShiftModifier);
+        QCOMPARE(d.selectionCount(), 1);
+        QCOMPARE(d.source(), many);
+        QTest::qWait(100);
+        const auto thirdSlide = list->mapToScene(QPointF(100, 340)).toPoint();
+        QTest::mouseClick(window, Qt::LeftButton, Qt::ShiftModifier, thirdSlide);
+        QCOMPARE(d.selectionFirst(), 0);
+        QCOMPARE(d.selectionLast(), 2);
+        QCOMPARE(d.source(), many);
+        QVERIFY(list->hasActiveFocus());
+        QTest::keyClick(window, Qt::Key_Down, Qt::ControlModifier);
+        QCOMPARE(d.selectionFirst(), 1);
+        QCOMPARE(d.selectionLast(), 3);
+        QCOMPARE(d.slide(1).trimmed(), "# Slide 0");
+        d.undo();
+        QCOMPARE(d.source(), many);
+        QCOMPARE(d.selectionCount(), 3);
+        const auto groupStart = list->mapToScene(QPointF(100, 196)).toPoint();
+        const auto groupEnd = list->mapToScene(QPointF(100, 550)).toPoint();
+        QTest::mousePress(window, Qt::LeftButton, Qt::NoModifier, groupStart);
+        for (int step = 1; step <= 20; ++step)
+            QTest::mouseMove(window, groupStart + (groupEnd - groupStart) * step / 20, 10);
+        QTest::mouseRelease(window, Qt::LeftButton, Qt::NoModifier, groupEnd);
+        QCOMPARE(d.selectionFirst(), 1);
+        QCOMPARE(d.selectionLast(), 3);
+        QCOMPARE(d.slide(1).trimmed(), "# Slide 0");
+        QCOMPARE(d.slide(2).trimmed(), "# Slide 1");
+        QCOMPARE(d.slide(3).trimmed(), "# Slide 2");
+        d.undo();
+        QTest::mouseClick(window, Qt::LeftButton, Qt::NoModifier, groupStart);
+        QCOMPARE(d.selectionCount(), 1);
+        QCOMPARE(d.selected(), 1);
+        d.select(0);
         QTest::keyClick(window, Qt::Key_Right);
         QCOMPARE(d.selected(), 1);
         QTest::keyClick(window, Qt::Key_Left);
         QCOMPARE(d.selected(), 0);
-        QTest::keyClick(window, Qt::Key_PageDown);
+        QTest::keyClick(window, Qt::Key_Down);
         QCOMPARE(d.selected(), 1);
+        QTest::keyClick(window, Qt::Key_Up);
+        QCOMPARE(d.selected(), 0);
+        QTest::keyClick(window, Qt::Key_PageDown);
+        QCOMPARE(d.selected(), 5);
         QTest::keyClick(window, Qt::Key_PageUp);
         QCOMPARE(d.selected(), 0);
+        d.select(2);
         QTest::keyClick(window, Qt::Key_PageUp);
         QCOMPARE(d.selected(), 0);
+        d.select(d.count() - 3);
+        QTest::keyClick(window, Qt::Key_PageDown);
+        QCOMPARE(d.selected(), d.count() - 1);
         QTest::keyClick(window, Qt::Key_End);
         QCOMPARE(d.selected(), d.count() - 1);
         QTest::keyClick(window, Qt::Key_PageDown);
@@ -255,26 +681,65 @@ class HypeTests : public QObject {
         QVERIFY(editor && editor->isVisible() && stage->isVisible());
         editor->forceActiveFocus();
         QVERIFY(editor->hasActiveFocus());
-        QCOMPARE(editor->property("text").toString(), d.slideSource());
+        const QString beforeTab = d.source();
+        QTest::keyClick(window, Qt::Key_Tab);
+        QVERIFY(list->hasActiveFocus());
+        QTest::keyClick(window, Qt::Key_Tab);
+        QVERIFY(editor->hasActiveFocus());
+        QTest::keyClick(window, Qt::Key_Tab, Qt::ShiftModifier);
+        QVERIFY(list->hasActiveFocus());
+        QTest::keyClick(window, Qt::Key_Tab, Qt::ShiftModifier);
+        QVERIFY(editor->hasActiveFocus());
+        QCOMPARE(d.source(), beforeTab);
+        QCOMPARE(editor->property("text").toString(), d.slideText());
         QVERIFY(editor->mapToScene(QPointF()).y() >=
                 stage->mapToScene(QPointF(0, stage->height())).y());
-        QString before = d.slideSource();
+        QString before = d.slideText();
         QTest::keyClick(window, Qt::Key_End, Qt::ControlModifier);
         QTest::keyClick(window, Qt::Key_X);
         QCOMPARE(d.slideSource().trimmed(), (before + "x").trimmed());
+        QTest::keyClick(window, Qt::Key_Return);
+        QTest::keyClick(window, Qt::Key_Return);
+        QCOMPARE(editor->property("text").toString(), before + "x\n\n");
+        QTest::keyClick(window, Qt::Key_Y);
+        QCOMPARE(editor->property("text").toString(), before + "x\n\ny");
+        QCOMPARE(d.slideText(), before + "x\n\ny");
+        QCOMPARE(editor->property("cursorPosition").toInt(), d.slideText().size());
         QString edited = d.source();
         d.select(21); // Selection while editing must not write the new slide over the old one.
         QCOMPARE(d.source(), edited);
-        QCOMPARE(editor->property("text").toString(), d.slideSource());
+        QCOMPARE(editor->property("text").toString(), d.slideText());
         QCOMPARE(editor->property("cursorPosition").toInt(), 0);
         int selected = d.selected();
+        const QString beforeShift = d.source();
+        QTest::keyClick(window, Qt::Key_Right, Qt::ShiftModifier);
+        QCOMPARE(d.selected(), selected);
+        QCOMPARE(d.source(), beforeShift);
+        QVERIFY(editor->property("selectedText").toString().size() > 0);
         QTest::keyClick(window, Qt::Key_Right);
+        QCOMPARE(d.selected(), selected);
+        QTest::keyClick(window, Qt::Key_Down);
+        QCOMPARE(d.selected(), selected);
+        QTest::keyClick(window, Qt::Key_Up);
+        QCOMPARE(d.selected(), selected);
+        QTest::keyClick(window, Qt::Key_PageDown);
+        QCOMPARE(d.selected(), selected);
+        QTest::keyClick(window, Qt::Key_PageUp);
         QCOMPARE(d.selected(), selected);
         QString beforeToggle = d.source();
         QTest::keyClick(window, Qt::Key_E, Qt::ControlModifier);
         QVERIFY(window->property("markdown").toBool());
         auto source = window->findChild<QQuickItem *>("sourceEditor");
         QVERIFY(source && source->isVisible() && source->hasActiveFocus());
+        QTest::keyClick(window, Qt::Key_Tab);
+        QVERIFY(list->hasActiveFocus());
+        QTest::keyClick(window, Qt::Key_Tab);
+        QVERIFY(source->hasActiveFocus());
+        QTest::keyClick(window, Qt::Key_Tab, Qt::ShiftModifier);
+        QVERIFY(list->hasActiveFocus());
+        QTest::keyClick(window, Qt::Key_Tab, Qt::ShiftModifier);
+        QVERIFY(source->hasActiveFocus());
+        QCOMPARE(d.source(), beforeToggle);
         QVERIFY(!stage->isVisible());
         QCOMPARE(source->property("text").toString(), d.source());
         QCOMPARE(source->property("cursorPosition").toInt(), d.sourcePosition());
@@ -345,6 +810,37 @@ class HypeTests : public QObject {
                          "Scrolled Markdown viewport must draw source text, not a blank pane");
             }
         }
+        d.editSource("# Short document\n");
+        QVERIFY(QMetaObject::invokeMethod(window, "openMarkdown"));
+        QTest::qWait(60);
+        for (int i = 0; i < 3; ++i) {
+            QTest::keyClick(window, Qt::Key_Return, Qt::ControlModifier);
+            QTest::qWait(60);
+            QCOMPARE(d.count(), i + 2);
+            QCOMPARE(flick->property("contentY").toDouble(), 0.0);
+            QVERIFY(flick->property("contentHeight").toDouble() <
+                    flick->property("height").toDouble());
+        }
+        d.editSource(many);
+        d.select(10);
+        QVERIFY(QMetaObject::invokeMethod(window, "openMarkdown"));
+        QTest::qWait(60);
+        double middleY = flick->property("contentY").toDouble();
+        QVERIFY(QMetaObject::invokeMethod(window, "addSlide"));
+        QTest::qWait(60);
+        QCOMPARE(flick->property("contentY").toDouble(), middleY);
+        d.select(d.count() - 1);
+        QVERIFY(QMetaObject::invokeMethod(window, "openMarkdown"));
+        QTest::qWait(60);
+        double bottomY = flick->property("contentY").toDouble();
+        QVERIFY(QMetaObject::invokeMethod(window, "addSlide"));
+        QTest::qWait(60);
+        double addedScroll = flick->property("contentY").toDouble() - bottomY;
+        QVERIFY(addedScroll >= 0 && addedScroll < 150);
+        QVERIFY(QMetaObject::invokeMethod(source, "positionToRectangle", Q_RETURN_ARG(QRectF, rect),
+                                          Q_ARG(int, d.sourcePosition())));
+        double cursorBottom = rect.bottom() - flick->property("contentY").toDouble();
+        QVERIFY(cursorBottom > 0 && cursorBottom <= flick->property("height").toDouble());
         window->setProperty("allowClose", true);
         window->close();
     }

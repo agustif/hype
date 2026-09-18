@@ -2,6 +2,7 @@
 #include <QAbstractListModel>
 #include <QColor>
 #include <QFileSystemWatcher>
+#include <QImage>
 #include <QUrl>
 #include <QVariantMap>
 
@@ -23,7 +24,11 @@ class Deck : public QAbstractListModel {
     Q_OBJECT
     Q_PROPERTY(QString source READ source NOTIFY changed)
     Q_PROPERTY(QString slideSource READ slideSource NOTIFY changed)
+    Q_PROPERTY(QString slideText READ slideText NOTIFY changed)
     Q_PROPERTY(int selected READ selected WRITE select NOTIFY changed)
+    Q_PROPERTY(int selectionFirst READ selectionFirst NOTIFY changed)
+    Q_PROPERTY(int selectionLast READ selectionLast NOTIFY changed)
+    Q_PROPERTY(int selectionCount READ selectionCount NOTIFY changed)
     Q_PROPERTY(int count READ count NOTIFY changed)
     Q_PROPERTY(int revision READ revision NOTIFY changed)
     Q_PROPERTY(bool dirty READ dirty NOTIFY changed)
@@ -46,7 +51,11 @@ class Deck : public QAbstractListModel {
     QHash<int, QByteArray> roleNames() const override;
     QString source() const { return m_source; }
     QString slideSource() const;
+    QString slideText() const;
     int selected() const { return m_selected; }
+    int selectionFirst() const { return qMin(m_anchor, m_selected); }
+    int selectionLast() const { return qMax(m_anchor, m_selected); }
+    int selectionCount() const { return selectionLast() - selectionFirst() + 1; }
     int count() const { return m_parsed.slides.size(); }
     int revision() const { return m_revision; }
     bool dirty() const { return m_source != m_saved; }
@@ -64,13 +73,18 @@ class Deck : public QAbstractListModel {
     QVariantMap palette() const;
     QVariantMap media() const;
     QString baseDir() const;
+    QString dialogDirectory() const;
     QString slide(int index) const;
     bool loadPath(const QString &path);
+    bool reopenLastPresentation();
     bool savePath(const QString &path);
     bool exportPdf(const QString &path);
     bool exportPptx(const QString &path);
     bool renderImages(const QString &directory, int width = 1920);
     Q_INVOKABLE void select(int index);
+    Q_INVOKABLE void extendSelection(int index);
+    Q_INVOKABLE void moveSelection(int direction);
+    Q_INVOKABLE void dropSelection(int slot);
     Q_INVOKABLE void selectAt(int position);
     Q_INVOKABLE int sourcePosition() const;
     Q_INVOKABLE void editSource(const QString &value);
@@ -88,7 +102,9 @@ class Deck : public QAbstractListModel {
     Q_INVOKABLE void newDeck();
     Q_INVOKABLE void importDialog();
     Q_INVOKABLE void importMedia(const QUrl &url);
-    Q_INVOKABLE void pasteImage();
+    Q_INVOKABLE bool pasteMedia();
+    Q_INVOKABLE QString savePastedMedia(const QString &name);
+    Q_INVOKABLE void cancelPaste();
     Q_INVOKABLE void exportDialog(const QString &format);
     Q_INVOKABLE QString renderId(int index) const;
     Q_INVOKABLE void matchImageBackground(bool enabled);
@@ -97,24 +113,33 @@ class Deck : public QAbstractListModel {
   signals:
     void changed();
     void statusChanged();
+    void pasteRequested(const QString &name, const QString &extension, bool video);
 
   private:
     struct State {
         QString source;
         int selected;
+        int anchor;
     };
     mutable QString m_paletteHeader, m_mediaSource, m_mediaBase;
     mutable QVariantMap m_mediaCache;
     mutable QVariantMap m_paletteCache;
     QString m_source, m_saved, m_path, m_status;
     ParsedDeck m_parsed;
-    int m_selected = 0, m_revision = 0;
+    int m_selected = 0, m_anchor = 0, m_revision = 0;
     QVector<State> m_undo, m_redo;
     QMap<QString, QString> m_themes;
     QFileSystemWatcher m_watcher;
     bool m_externalChange = false;
-    void apply(const QString &source, int selected, bool history = true);
-    void replaceSlides(const QStringList &slides, int selected);
+    struct PendingPaste {
+        QString source, extension, path, document;
+        QImage image;
+        QByteArray data;
+        bool video = false;
+        int selected = 0;
+    } m_paste;
+    void apply(const QString &source, int selected, bool history = true, int anchor = -1);
+    void replaceSlides(const QStringList &slides, int selected, int anchor = -1);
     bool confirmDiscard();
     void discoverThemes();
     void watch();

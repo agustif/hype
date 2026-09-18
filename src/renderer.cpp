@@ -74,6 +74,22 @@ static QString assetPath(const QString &base, QString file, bool video) {
                                    ? file
                                    : (video ? "videos/" : "images/") + file);
 }
+QString withMedia(const QString &source, const QString &reference) {
+    QString visible = outsideCode(source);
+    auto comments = QRegularExpression("<!--[\\s\\S]*?-->").globalMatch(visible);
+    while (comments.hasNext()) {
+        const auto comment = comments.next();
+        visible.replace(comment.capturedStart(), comment.capturedLength(),
+                        QString(comment.capturedLength(), ' '));
+    }
+    auto match = mediaRe.match(visible);
+    QString updated = source;
+    if (match.hasMatch())
+        updated.replace(match.capturedStart(), match.capturedLength(), reference);
+    else
+        updated += "\n" + reference + "\n";
+    return updated;
+}
 Media parseMedia(const QString &source, const QString &base) {
     Media result;
     result.text = withoutComments(source);

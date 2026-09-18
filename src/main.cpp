@@ -11,7 +11,7 @@
 int main(int argc, char **argv) {
     QApplication app(argc, argv);
     app.setApplicationName("hype");
-    app.setDesktopFileName("hype");
+    app.setDesktopFileName(qEnvironmentVariable("HYPE_DESKTOP_FILE", "hype"));
     QCommandLineParser args;
     args.addHelpOption();
     args.addPositionalArgument("presentation", "Markdown presentation");
@@ -30,6 +30,8 @@ int main(int argc, char **argv) {
         fprintf(stderr, "%s\n", qPrintable(deck.status()));
         return 1;
     }
+    if (positional.isEmpty())
+        deck.reopenLastPresentation();
     if (args.isSet("theme"))
         deck.chooseTheme(args.value("theme"));
     if (args.isSet("save"))

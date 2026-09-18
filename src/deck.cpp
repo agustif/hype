@@ -8,16 +8,19 @@
 #include <QFileDialog>
 #include <QFileInfo>
 #include <QFontDatabase>
+#include <QImageReader>
 #include <QImageWriter>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QMessageBox>
+#include <QMimeData>
 #include <QPainter>
 #include <QPdfWriter>
 #include <QProcess>
 #include <QRegularExpression>
 #include <QSaveFile>
+#include <QSettings>
 #include <QStandardPaths>
 #include <QTemporaryDir>
 
@@ -160,6 +163,13 @@ QHash<int, QByteArray> Deck::roleNames() const {
     return {{TitleRole, "slideTitle"}, {NumberRole, "number"}};
 }
 QString Deck::slideSource() const { return slide(m_selected); }
+static QString withoutSlidePadding(QString text) {
+    // Strip boundary lines, not indentation or Markdown hard-break spaces.
+    text.remove(QRegularExpression("^(?:[ \\t]*\\r?\\n)+"));
+    text.remove(QRegularExpression("(?:\\r?\\n[ \\t]*)+$"));
+    return text.trimmed().isEmpty() ? QString() : text;
+}
+QString Deck::slideText() const { return withoutSlidePadding(slideSource()); }
 QString Deck::slide(int i) const {
     return i >= 0 && i < count() ? m_parsed.slides[i].source : QString();
 }
@@ -174,13 +184,15 @@ void Deck::setStatus(const QString &s) {
     m_status = s;
     emit statusChanged();
 }
-void Deck::apply(const QString &source, int selected, bool history) {
+void Deck::apply(const QString &source, int selected, bool history, int anchor) {
     if (source == m_source) {
-        select(selected);
+        m_anchor = qBound(0, anchor < 0 ? selected : anchor, count() - 1);
+        m_selected = qBound(0, selected, count() - 1);
+        emit changed();
         return;
     }
     if (history) {
-        m_undo.append({m_source, m_selected});
+        m_undo.append({m_source, m_selected, m_anchor});
         if (m_undo.size() > 200)
             m_undo.removeFirst();
         m_redo.clear();
@@ -197,6 +209,7 @@ void Deck::apply(const QString &source, int selected, bool history) {
     m_source = source;
     m_parsed = parsed;
     m_selected = qBound(0, selected, count() - 1);
+    m_anchor = qBound(0, anchor < 0 ? selected : anchor, count() - 1);
     ++m_revision;
     if (reset)
         endResetModel();
@@ -209,10 +222,39 @@ void Deck::apply(const QString &source, int selected, bool history) {
 }
 void Deck::select(int index) {
     index = qBound(0, index, count() - 1);
+    if (m_selected == index && m_anchor == index)
+        return;
+    m_selected = m_anchor = index;
+    emit changed();
+}
+void Deck::extendSelection(int index) {
+    index = qBound(0, index, count() - 1);
     if (m_selected == index)
         return;
     m_selected = index;
     emit changed();
+}
+void Deck::moveSelection(int direction) {
+    if (direction < 0 && selectionFirst() > 0)
+        dropSelection(selectionFirst() - 1);
+    else if (direction > 0 && selectionLast() < count() - 1)
+        dropSelection(selectionLast() + 2);
+}
+void Deck::dropSelection(int slot) {
+    const int first = selectionFirst(), last = selectionLast(), length = selectionCount();
+    if (slot < 0 || slot > count() || (slot >= first && slot <= last + 1))
+        return;
+    QStringList slides;
+    for (const auto &slide : m_parsed.slides)
+        slides << slide.source;
+    const QStringList moving = slides.mid(first, length);
+    for (int i = 0; i < length; ++i)
+        slides.removeAt(first);
+    const int destination = slot > last ? slot - length : slot;
+    for (int i = 0; i < length; ++i)
+        slides.insert(destination + i, moving[i]);
+    const int offset = destination - first;
+    replaceSlides(slides, m_selected + offset, m_anchor + offset);
 }
 void Deck::selectAt(int position) {
     for (int i = count() - 1; i >= 0; --i)
@@ -225,24 +267,33 @@ int Deck::sourcePosition() const { return m_parsed.slides.value(m_selected).star
 void Deck::editSource(const QString &s) { apply(s, m_selected); }
 void Deck::editSlide(const QString &s) {
     const auto range = m_parsed.slides.value(m_selected);
-    QString body = s;
-    if (m_selected < count() - 1 && !body.endsWith('\n'))
-        body += '\n';
+    QString body = withoutSlidePadding(s);
+    if (!body.isEmpty()) {
+        if (range.start > 0)
+            body.prepend('\n');
+        body += m_selected < count() - 1 ? "\n\n" : "\n";
+    } else {
+        body = "\n";
+    }
     QString edited = m_source;
     edited.replace(range.start, range.end - range.start, body);
     apply(edited, m_selected);
 }
-void Deck::replaceSlides(const QStringList &slides, int selected) {
+void Deck::replaceSlides(const QStringList &slides, int selected, int anchor) {
     QString out = m_parsed.header;
     for (int i = 0; i < slides.size(); ++i) {
-        if (i) {
-            if (!out.endsWith('\n'))
-                out += '\n';
+        if (i)
             out += "---\n";
+        const QString body = withoutSlidePadding(slides[i]);
+        if (!body.isEmpty()) {
+            if (!out.isEmpty())
+                out += '\n';
+            out += body + '\n';
         }
-        out += slides[i];
+        if (i < slides.size() - 1 || body.isEmpty())
+            out += '\n';
     }
-    apply(out, selected);
+    apply(out, selected, true, anchor);
 }
 void Deck::moveSlide(int from, int to) {
     if (from < 0 || from >= count() || to < 0 || to >= count() || from == to)
@@ -257,38 +308,44 @@ void Deck::addSlide() {
     QStringList list;
     for (auto &s : m_parsed.slides)
         list << s.source;
-    list.insert(m_selected + 1, "\n\n");
-    replaceSlides(list, m_selected + 1);
+    const int next = selectionLast() + 1;
+    list.insert(next, "\n\n");
+    replaceSlides(list, next);
 }
 void Deck::duplicateSlide() {
     QStringList list;
     for (auto &s : m_parsed.slides)
         list << s.source;
-    list.insert(m_selected + 1, slideSource());
-    replaceSlides(list, m_selected + 1);
+    const int length = selectionCount(), next = selectionLast() + 1;
+    const QStringList copies = list.mid(selectionFirst(), length);
+    for (int i = 0; i < length; ++i)
+        list.insert(next + i, copies[i]);
+    replaceSlides(list, m_selected + length, m_anchor + length);
 }
 void Deck::deleteSlide() {
     QStringList list;
     for (auto &s : m_parsed.slides)
         list << s.source;
-    list.removeAt(m_selected);
+    const int first = selectionFirst();
+    for (int i = 0; i < selectionCount(); ++i)
+        list.removeAt(first);
     if (list.isEmpty())
         list << "\n";
-    replaceSlides(list, qMin(m_selected, int(list.size()) - 1));
+    replaceSlides(list, qMin(first, int(list.size()) - 1));
 }
 void Deck::undo() {
     if (m_undo.isEmpty())
         return;
     auto state = m_undo.takeLast();
-    m_redo.append({m_source, m_selected});
-    apply(state.source, state.selected, false);
+    m_redo.append({m_source, m_selected, m_anchor});
+    apply(state.source, state.selected, false, state.anchor);
 }
 void Deck::redo() {
     if (m_redo.isEmpty())
         return;
     auto state = m_redo.takeLast();
-    m_undo.append({m_source, m_selected});
-    apply(state.source, state.selected, false);
+    m_undo.append({m_source, m_selected, m_anchor});
+    apply(state.source, state.selected, false, state.anchor);
 }
 void Deck::discoverThemes() {
     QString root = qEnvironmentVariable("OMARCHY_PATH", QDir::homePath() + "/.local/share/omarchy");
@@ -381,6 +438,26 @@ void Deck::watch() {
     if (QFile::exists(m_path))
         m_watcher.addPath(m_path);
 }
+QString Deck::dialogDirectory() const {
+    QSettings settings(QSettings::IniFormat, QSettings::UserScope, "hype", "hype");
+    const QString last = settings.value("files/lastDirectory").toString();
+    if (!last.isEmpty() && QDir(last).exists())
+        return last;
+    if (!m_path.isEmpty() && QDir(baseDir()).exists())
+        return baseDir();
+    const QString documents = QStandardPaths::writableLocation(QStandardPaths::DocumentsLocation);
+    return !documents.isEmpty() && QDir(documents).exists() ? documents : QDir::homePath();
+}
+static void rememberPresentation(const QString &path) {
+    QSettings settings(QSettings::IniFormat, QSettings::UserScope, "hype", "hype");
+    settings.setValue("files/lastDirectory", QFileInfo(path).absolutePath());
+    settings.setValue("files/lastPresentation", path);
+}
+bool Deck::reopenLastPresentation() {
+    QSettings settings(QSettings::IniFormat, QSettings::UserScope, "hype", "hype");
+    const QString path = settings.value("files/lastPresentation").toString();
+    return !path.isEmpty() && QFileInfo(path).isFile() && loadPath(path);
+}
 bool Deck::loadPath(const QString &path) {
     QFile f(path);
     if (!f.open(QIODevice::ReadOnly)) {
@@ -397,6 +474,7 @@ bool Deck::loadPath(const QString &path) {
     watch();
     emit changed();
     setStatus("Opened " + title());
+    rememberPresentation(m_path);
     return true;
 }
 bool Deck::savePath(const QString &path) {
@@ -423,6 +501,7 @@ bool Deck::savePath(const QString &path) {
     watch();
     emit changed();
     setStatus("Saved");
+    rememberPresentation(m_path);
     return true;
 }
 bool Deck::confirmDiscard() {
@@ -434,7 +513,7 @@ void Deck::openDialog() {
     if (!confirmDiscard())
         return;
     QString p =
-        QFileDialog::getOpenFileName(nullptr, "Open presentation", baseDir(), "Markdown (*.md)");
+        QFileDialog::getOpenFileName(nullptr, "Open File", dialogDirectory(), "Markdown (*.md)");
     if (!p.isEmpty())
         loadPath(p);
 }
@@ -446,7 +525,9 @@ void Deck::save() {
 }
 void Deck::saveAs() {
     QString p = QFileDialog::getSaveFileName(
-        nullptr, "Save presentation", m_path.isEmpty() ? baseDir() + "/presentation.md" : m_path,
+        nullptr, "Save presentation",
+        QDir(dialogDirectory())
+            .filePath(m_path.isEmpty() ? "presentation.md" : QFileInfo(m_path).fileName()),
         "Markdown (*.md)");
     if (p.isEmpty())
         return;
@@ -538,16 +619,100 @@ void Deck::importMedia(const QUrl &url) {
     editSlide(slideSource() + "\n![](<" + name + ">)\n");
     setStatus("Added " + name);
 }
-void Deck::pasteImage() {
-    QImage image = QApplication::clipboard()->image();
-    if (image.isNull()) {
-        setStatus("No image on the clipboard.");
-        return;
+bool Deck::pasteMedia() {
+    const QMimeData *clipboard = QApplication::clipboard()->mimeData();
+    if (!clipboard)
+        return false;
+    QString source, extension, suggested = "image";
+    bool video = false;
+    QImage image;
+    QByteArray videoData;
+    // Prefer copied files to thumbnail image data supplied by file managers.
+    for (const QUrl &url : clipboard->urls()) {
+        if (!url.isLocalFile())
+            continue;
+        QFileInfo file(url.toLocalFile());
+        const QString suffix = file.suffix().toLower();
+        bool isVideo = QStringList{"mp4", "mov", "mkv", "webm", "m4v"}.contains(suffix);
+        if (!file.isFile() || (!isVideo && !QImageReader(file.absoluteFilePath()).canRead()))
+            continue;
+        source = file.absoluteFilePath();
+        extension = suffix;
+        suggested = file.completeBaseName();
+        video = isVideo;
+        break;
     }
-    QTemporaryDir dir;
-    QString path = dir.path() + "/pasted-image.png";
-    image.save(path);
-    importMedia(QUrl::fromLocalFile(path));
+    if (source.isEmpty()) {
+        const QMap<QString, QString> formats{{"video/mp4", "mp4"},
+                                             {"video/webm", "webm"},
+                                             {"video/quicktime", "mov"},
+                                             {"video/x-matroska", "mkv"}};
+        for (auto it = formats.cbegin(); it != formats.cend(); ++it) {
+            if (!clipboard->hasFormat(it.key()))
+                continue;
+            videoData = clipboard->data(it.key());
+            if (videoData.isEmpty())
+                continue;
+            video = true;
+            extension = it.value();
+            suggested = "video";
+            break;
+        }
+        if (!video) {
+            image = QApplication::clipboard()->image();
+            if (image.isNull())
+                return false;
+            extension = "png";
+        }
+    }
+    if (m_path.isEmpty()) {
+        saveAs();
+        if (m_path.isEmpty())
+            return true;
+    }
+    m_paste = {source, extension, m_path, m_source, image, videoData, video, m_selected};
+    emit pasteRequested(suggested, extension, video);
+    return true;
+}
+void Deck::cancelPaste() { m_paste = {}; }
+QString Deck::savePastedMedia(const QString &value) {
+    if (m_paste.extension.isEmpty())
+        return "Paste an image or video first.";
+    if (m_path != m_paste.path || m_source != m_paste.document || m_selected != m_paste.selected)
+        return "The slide changed. Cancel and paste again.";
+    QString stem = value.trimmed();
+    if (stem.endsWith("." + m_paste.extension, Qt::CaseInsensitive))
+        stem.chop(m_paste.extension.size() + 1);
+    if (stem.isEmpty() || stem == "." || stem == ".." ||
+        stem.contains(QRegularExpression(R"([/\\<>\x00-\x1f])")))
+        return "Use a filename without folders or special characters.";
+    const QString name = stem + "." + m_paste.extension;
+    const QString directory = QDir(baseDir()).filePath(m_paste.video ? "videos" : "images");
+    const QString destination = QDir(directory).filePath(name);
+    if (QFile::exists(destination))
+        return name + " already exists. Choose another name.";
+    if (!QDir().mkpath(directory))
+        return "Could not create " + directory;
+    bool saved = false;
+    if (!m_paste.source.isEmpty())
+        saved = QFile::copy(m_paste.source, destination);
+    else {
+        QFile output(destination);
+        if (output.open(QIODevice::WriteOnly | QIODevice::NewOnly)) {
+            saved = m_paste.video ? output.write(m_paste.data) == m_paste.data.size()
+                                  : m_paste.image.save(&output, "PNG");
+            saved = output.flush() && saved;
+            output.close();
+            if (!saved)
+                output.remove();
+        }
+    }
+    if (!saved)
+        return "Could not save " + name;
+    cancelPaste();
+    editSlide(withMedia(slideSource(), "![](<" + name + ">)"));
+    setStatus("Added " + name);
+    return {};
 }
 QString Deck::renderId(int index) const {
     QByteArray bytes;
