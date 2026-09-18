@@ -318,6 +318,13 @@ static void textDocument(QTextDocument &doc, const QString &markdown, const QVar
         }
     doc.setTextWidth(width);
 }
+QRectF mediaRect(const Media &media) {
+    if (!media.side.isEmpty())
+        return QRectF(media.side == "left" ? 60 : 980, 60, 880, 960);
+    return media.span ? QRectF(0, 0, 1920, 1080)
+                      : (media.text.trimmed().isEmpty() ? QRectF(70, 50, 1780, 980)
+                                                        : QRectF(100, 280, 1720, 730));
+}
 void paintSlide(QPainter *p, const QRectF &target, const QString &source, const QString &base,
                 const QVariantMap &inputPalette, QString *warning, bool overlayOnly,
                 bool backgroundOnly) {
@@ -388,11 +395,8 @@ void paintSlide(QPainter *p, const QRectF &target, const QString &source, const 
             }
         }
 
-        QRectF rect =
-            media.span ? QRectF(0, 0, 1920, 1080)
-                       : (text.isEmpty() ? QRectF(70, 50, 1780, 980) : QRectF(100, 280, 1720, 730));
+        const QRectF rect = mediaRect(media);
         if (!media.side.isEmpty()) {
-            rect = QRectF(media.side == "left" ? 60 : 980, 60, 880, 960);
             area = QRectF(media.side == "left" ? 1040 : 100, 90, 780, 900);
         }
         if (!overlayOnly && !backgroundOnly && !image.isNull()) {

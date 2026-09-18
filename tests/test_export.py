@@ -1,5 +1,6 @@
 """Exercise native PowerPoint export using only Python's standard test tools."""
 import os
+import json
 from pathlib import Path
 import shutil
 import struct
@@ -130,12 +131,92 @@ class ExportTests(unittest.TestCase):
         self.assertIn('H.264', result.stderr)
         self.assertEqual(self.output.read_bytes(), original)
 
+    def animation(self, extension):
+        source = Path(__file__).parent / 'fixtures' / f'animated.{extension}'
+        target = self.root / 'images' / f'demo.{extension}'
+        shutil.copy2(source, target)
+        return target
+
+    def extracted_movie(self):
+        with zipfile.ZipFile(self.output) as archive:
+            movies = [name for name in archive.namelist() if name.endswith('.mp4')]
+            self.assertEqual(len(movies), 1)
+            target = self.root / 'converted.mp4'
+            target.write_bytes(archive.read(movies[0]))
+            xml = ET.fromstring(archive.read('ppt/slides/slide1.xml'))
+        probe = subprocess.run(['ffprobe', '-v', 'error', '-show_streams', '-show_format',
+                                '-of', 'json', str(target)], capture_output=True, check=True)
+        info = json.loads(probe.stdout)
+        self.assertEqual(info['streams'][0]['codec_name'], 'h264')
+        self.assertEqual(info['streams'][0]['pix_fmt'], 'yuv420p')
+        self.assertEqual((info['streams'][0]['width'], info['streams'][0]['height']), (1920, 1080))
+        self.assertEqual(len(info['streams']), 1)
+        return target, xml, info
+
+    def movie_pixel(self, movie, time, x=96, y=54):
+        result = subprocess.run(['ffmpeg', '-v', 'error', '-ss', str(time), '-i', str(movie),
+                                 '-frames:v', '1', '-vf', 'scale=192:108', '-f', 'rawvideo',
+                                 '-pix_fmt', 'rgb24', 'pipe:1'], capture_output=True, check=True)
+        offset = (y * 192 + x) * 3
+        self.assertEqual(len(result.stdout), 192 * 108 * 3)
+        return tuple(result.stdout[offset:offset + 3])
+
+    def assert_color(self, actual, expected):
+        for channel, value in zip(actual, expected):
+            self.assertAlmostEqual(channel, value, delta=12)
+
+    def test_webp_conversion_preserves_motion_alpha_and_timing(self):
+        source = self.animation('webp')
+        original = source.read_bytes()
+        self.export('![fit background=#123456](demo.webp)\n')
+        movie, xml, info = self.extracted_movie()
+        self.assertAlmostEqual(float(info['format']['duration']), 0.6, delta=0.04)
+        self.assert_color(self.movie_pixel(movie, 0.05), (255, 0, 0))
+        self.assert_color(self.movie_pixel(movie, 0.25), (0, 0, 255))
+        self.assert_color(self.movie_pixel(movie, 0.45), (18, 52, 86))
+        timing = xml.find('.//p:video/p:cMediaNode', NS)
+        self.assertEqual(timing.get('vol'), '0')
+        self.assertEqual(timing.find('p:cTn', NS).get('repeatCount'), 'indefinite')
+        self.assertEqual(source.read_bytes(), original)
+        self.assertEqual(list((self.root / 'videos').iterdir()), [])
+        self.assertEqual(set((self.root / 'images').iterdir()), {self.root / 'images/photo.png', source})
+
+    def test_gif_conversion_preserves_side_layout_finite_loop_and_manual_playback(self):
+        self.animation('gif')
+        self.export('![left background=#123456 autoplay=false](demo.gif)\n\n# Caption\n')
+        movie, xml, info = self.extracted_movie()
+        self.assertAlmostEqual(float(info['format']['duration']), 0.68, delta=0.04)
+        self.assert_color(self.movie_pixel(movie, 0.05, 50, 54), (255, 0, 0))
+        self.assert_color(self.movie_pixel(movie, 0.25, 50, 54), (0, 0, 255))
+        self.assert_color(self.movie_pixel(movie, 0.55, 50, 54), (0, 128, 0))
+        self.assert_color(self.movie_pixel(movie, 0.25, 180, 10), (18, 52, 86))
+        timing = xml.find('.//p:video/p:cMediaNode/p:cTn', NS)
+        self.assertEqual(timing.get('repeatCount'), '3000')
+        self.assertEqual(timing.find('p:stCondLst/p:cond', NS).get('delay'), 'indefinite')
+        # Arbitrary image aspect ratios can span a slide, unlike existing MP4s.
+        self.export('![span loop](demo.gif)\n\n# Overlaid headline\n')
+        movie, xml, _ = self.extracted_movie()
+        self.assert_color(self.movie_pixel(movie, 0.25, 10, 10), (0, 0, 191))
+        self.assertEqual(xml.find('.//p:video/p:cMediaNode/p:cTn', NS).get('repeatCount'), 'indefinite')
+
+    def test_animation_conversion_failure_preserves_export(self):
+        self.export('# Original\n')
+        original = self.output.read_bytes()
+        self.animation('webp')
+        (self.root / 'tools/ffmpeg').unlink()
+        result = self.export('![](demo.webp)\n', success=False)
+        self.assertIn('Slide 1', result.stderr)
+        self.assertIn('ffmpeg', result.stderr)
+        self.assertEqual(self.output.read_bytes(), original)
+        self.assertEqual(list((self.root / 'videos').iterdir()), [])
+
     @unittest.skipUnless(os.environ.get('HYPE_OFFICE_TESTS') and shutil.which('libreoffice'),
                          'Set HYPE_OFFICE_TESTS=1 to verify with LibreOffice')
     def test_libreoffice_opens_export(self):
         self.movie()
+        self.animation('webp')
         self.export('# Hello\n\n---\n\n![loop muted](demo.mp4)\n\n---\n\n'
-                    '![span](demo.mp4)\n\n# Overlaid headline\n')
+                    '![span](demo.mp4)\n\n# Overlaid headline\n\n---\n\n![](demo.webp)\n')
         output = self.root / 'pdf'
         output.mkdir()
         profile = (self.root / 'office-profile').as_uri()

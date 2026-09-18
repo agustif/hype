@@ -80,7 +80,7 @@ class Deck : public QAbstractListModel {
     bool savePath(const QString &path);
     bool exportPdf(const QString &path);
     bool exportPptx(const QString &path);
-    bool renderImages(const QString &directory, int width = 1920);
+    bool renderImages(const QString &directory, int width = 1920, bool convertAnimations = false);
     Q_INVOKABLE void select(int index);
     Q_INVOKABLE void extendSelection(int index);
     Q_INVOKABLE void moveSelection(int direction);

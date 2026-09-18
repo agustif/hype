@@ -177,6 +177,7 @@ void masterColors(Writer &x) {
 struct Slide {
     QString image, video, poster, overlay;
     bool autoplay = true, loop = false, muted = false;
+    int repeatCount = 1;
     qint64 x = 0, y = 0, width = slideWidth, height = slideHeight;
 };
 void picture(Writer &x, int id, const QString &name, const QString &imageId, const Slide &bounds,
@@ -248,6 +249,8 @@ QByteArray slideXml(const Slide &slide) {
             start(x, "p:cTn", {{"id", "2"}, {"fill", "hold"}, {"display", "0"}});
             if (slide.loop)
                 x.writeAttribute("repeatCount", "indefinite");
+            else if (slide.repeatCount > 1)
+                x.writeAttribute("repeatCount", QString::number(qint64(slide.repeatCount) * 1000));
             start(x, "p:stCondLst");
             element(x, "p:cond", {{"delay", slide.autoplay ? "0" : "indefinite"}});
             x.writeEndElement();
@@ -341,6 +344,7 @@ bool readSlide(const QJsonObject &entry, const QDir &base, Slide &slide, QString
     slide.poster = base.filePath(entry["poster"].toString());
     slide.autoplay = entry["autoplay"].toBool(true);
     slide.loop = entry["loop"].toBool();
+    slide.repeatCount = entry["repeatCount"].toInt(1);
     slide.muted = entry["muted"].toBool();
     if (!entry["overlay_image"].toString().isEmpty())
         slide.overlay = base.filePath(entry["overlay_image"].toString());

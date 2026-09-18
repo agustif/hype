@@ -1,4 +1,5 @@
 #include "deck.h"
+#include "animationexport.h"
 #include "pptx.h"
 #include "renderer.h"
 #include <QApplication>
@@ -818,7 +819,7 @@ bool Deck::exportPdf(const QString &path) {
     setStatus("Exported " + path);
     return true;
 }
-bool Deck::renderImages(const QString &directory, int width) {
+bool Deck::renderImages(const QString &directory, int width, bool convertAnimations) {
     QDir().mkpath(directory);
     QJsonArray slides;
     for (int i = 0; i < count(); ++i) {
@@ -850,6 +851,27 @@ bool Deck::renderImages(const QString &directory, int width) {
             entry["loop"] = media.loop;
             entry["muted"] = media.muted;
         }
+        if (convertAnimations && !media.video && !media.path.isEmpty()) {
+            QImageReader reader(media.path);
+            if (reader.supportsAnimation() && reader.imageCount() > 1) {
+                const QString movie = QString("animation-%1.mp4").arg(i + 1);
+                int repeats = 1;
+                QString error;
+                if (!exportAnimation(slide(i), baseDir(), palette(), directory + "/" + movie, width,
+                                     &repeats, &error)) {
+                    setStatus(QString("Slide %1: %2").arg(i + 1).arg(error));
+                    return false;
+                }
+                // Composite the complete slide to preserve crop, side layouts, and alpha.
+                entry["video"] = movie;
+                entry["poster"] = name;
+                entry["span"] = true;
+                entry["autoplay"] = media.autoplay;
+                entry["loop"] = repeats < 0;
+                entry["repeatCount"] = repeats;
+                entry["muted"] = true;
+            }
+        }
         if (media.video && media.span) {
             QImage overlay(width, width * 9 / 16, QImage::Format_ARGB32_Premultiplied);
             overlay.fill(Qt::transparent);
@@ -873,7 +895,7 @@ bool Deck::renderImages(const QString &directory, int width) {
 }
 bool Deck::exportPptx(const QString &path) {
     QTemporaryDir temp;
-    if (!renderImages(temp.path()))
+    if (!renderImages(temp.path(), 1920, true))
         return false;
     QString error;
     if (!writePptx(temp.path() + "/slides.json", path, &error)) {

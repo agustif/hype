@@ -109,7 +109,7 @@ Use the buttons below the preview or put layout options inside the brackets:
 
 For images that leave space around them, Hype matches the background to the image’s edge color when possible. Choose **Background → Use theme color** to override it, or specify a color: `![fit background=#ffffff](diagram.png)`.
 
-Animated WebP and GIF images play inline in the preview and while presenting. Use the usual image syntax, such as `![](demo.webp)`, with the file in `images/`. Space pauses or resumes animations while presenting; PDF and PowerPoint exports capture their first frame.
+Animated WebP and GIF images play inline in the preview and while presenting. Use the usual image syntax, such as `![](demo.webp)`, with the file in `images/`. Space pauses or resumes animations while presenting; PowerPoint exports automatically convert them to embedded MP4 videos, preserving the slide layout and playback settings. PDF exports capture their first frame.
 
 Each slide supports one image or video. Copy the whole presentation folder when sharing or moving it.
 
@@ -123,7 +123,7 @@ Colors and the font choice are saved in the Markdown file. Install the same font
 
 Click **Present** or press **F5** to go fullscreen. Use the arrows to navigate, Space to play or pause video, and Escape to return to editing.
 
-Choose **Export → PDF** or **PowerPoint** to share your presentation. Both exports are built into Hype. PowerPoint slides preserve the rendered appearance rather than exposing editable text and shapes; videos are embedded. PDF captures still slides.
+Choose **Export → PDF** or **PowerPoint** to share your presentation. Both exports are built into Hype. PowerPoint slides preserve the rendered appearance rather than exposing editable text and shapes; the receiving computer does not need your fonts installed. Videos are embedded, and animated WebP/GIF images are converted to MP4 automatically without changing the original files. PDF captures still slides.
 
 For PowerPoint video, use H.264 MP4 with optional AAC audio. Use `fit` for videos that aren’t 16:9. Video autoplay and looping may vary between presentation apps; playback in Microsoft PowerPoint has not yet been verified.
 

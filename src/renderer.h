@@ -8,6 +8,7 @@ struct Media {
     double overlay = 0;
     QString text;
 };
+QRectF mediaRect(const Media &media);
 QString withMedia(const QString &source, const QString &reference);
 Media parseMedia(const QString &source, const QString &base);
 QString ensurePoster(const QString &video, const QString &base);
