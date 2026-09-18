@@ -4,6 +4,16 @@ Simple presentations, written in Markdown. Big headlines, images, video, and cod
 
 Hype is a native app for Omarchy. Your presentation is a Markdown file with its media alongside it. Choose an installed Omarchy theme, pick a font, and export to PDF or PowerPoint.
 
+## Install
+
+Install Hype from the [Omarchy Package Repository (OPR)](https://github.com/omacom/omarchy-pkgs):
+
+```sh
+sudo pacman -S hype
+```
+
+Then open **Hype** from the app launcher, or run `hype` in a terminal.
+
 ## Make a presentation
 
 Open Hype from your app launcher. It reopens your last presentation; use **Ctrl+N** to start a new one, or **Open** to choose a Markdown file.
@@ -143,9 +153,7 @@ The mouse wheel over the sidebar selects the previous or next slide. In the Mark
 
 ## Run from source
 
-Hype is currently installed from this checkout. On Omarchy/Arch, `./bin/install` builds and installs the package and adds Hype to the app launcher. Dependencies include Qt 6, FFmpeg, GNU source-highlight, and `python-pptx` for PowerPoint export; see [the package definition](pkgbuild/PKGBUILD) for the full list.
-
-To try it without installing the app:
+To build Hype yourself, install a C++17 compiler, make, Qt 6.8 or newer, FFmpeg, and GNU source-highlight; see [the package definition](pkgbuild/PKGBUILD) for dependencies. Then:
 
 ```sh
 ./bin/build
