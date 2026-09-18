@@ -1,130 +1,155 @@
 # Hype
 
-A small native Markdown presentation editor for Omarchy. The first working build uses Qt Quick and C++17, with the same qmake/build-script approach as Omacut.
+Simple presentations, written in Markdown. Big headlines, images, video, and code—with a visual editor to put everything in order.
+
+Hype is a native app for Omarchy. Your presentation is a Markdown file with its media alongside it. Choose an installed Omarchy theme, pick a font, and export to PDF or PowerPoint.
+
+## Make a presentation
+
+Open Hype from your app launcher. It reopens your last presentation; use **Ctrl+N** to start a new one, or **Open** to choose a Markdown file.
+
+In **Visual** mode, select a slide in the sidebar and write its Markdown below the preview. Changes appear as you type. Drag the divider to give the preview or editor more room. Switch to **Markdown** with **Ctrl+E** to edit the whole presentation.
+
+Use **+ New slide** to add a slide after the selection. Drag slides to rearrange them—their Markdown moves with them. Hold a dragged slide near the sidebar’s top or bottom to scroll further. Select several slides with **Shift+click** or **Shift+arrows** to move, duplicate, or delete them together.
+
+Save with **Ctrl+S**. Hype remembers the last directory you opened or saved to.
+
+## Write your slides
+
+Separate slides with `---`, with a blank line on either side:
+
+````markdown
+# A big idea
+
+---
+
+# Keep it simple
+
+- Write in Markdown
+- Put your slides in order
+- Tell your story
+
+---
+
+> Make something wonderful.
+
+— Your closing thought
+
+---
+
+# Show the code
+
+```ruby
+class Presentation
+  def next_slide
+    slides.next
+  end
+end
+```
+````
+
+Headlines are big by default. Quotes, lists, tables, and inline `code` work too. Ordinary line breaks stay visible on the slide. Code blocks fit the slide and use syntax highlighting when you specify a language, such as `ruby`, `javascript`, `bash`, or `json`.
+
+The single-slide editor hides the blank lines around slide separators, leaving just your content to edit.
+
+## Add images and video
+
+Paste an image or a copied image/video file with **Ctrl+V**. Hype asks for a name, saves the file, and adds it to the selected slide. Pasting onto a slide that already has media replaces that media while keeping the text. You can also drag a file onto the preview or use **+ Image / video**.
+
+Media lives beside the Markdown file:
+
+```text
+my-talk/
+  presentation.md
+  images/
+    city.jpg
+    diagram.png
+  videos/
+    demo.mp4
+```
+
+Use just the filename; Hype finds the right directory:
+
+```markdown
+![](diagram.png)
+
+---
+
+![](city.jpg)
+
+# A headline over a background
+
+---
+
+![](demo.mp4)
+```
+
+A lone image fits without cropping. An image with a headline becomes a background. Videos fit the slide and play once when you reach them during a presentation.
+
+Use the buttons below the preview or put layout options inside the brackets:
+
+| Markdown | Result |
+| --- | --- |
+| `![fit](photo.jpg)` | Show the whole image, with any headline above it |
+| `![span](photo.jpg)` | Fill the slide, cropping as needed |
+| `![left](photo.jpg)` | Put the image beside text on the left |
+| `![right](photo.jpg)` | Put the image beside text on the right |
+| `![loop muted](demo.mp4)` | Loop a video without sound |
+| `![autoplay=false](demo.mp4)` | Wait for Space to play the video |
+
+For images that leave space around them, Hype matches the background to the image’s edge color when possible. Choose **Background → Use theme color** to override it, or specify a color: `![fit background=#ffffff](diagram.png)`.
+
+Each slide supports one image or video. Copy the whole presentation folder when sharing or moving it.
+
+## Choose your look
+
+The toolbar lets you choose an installed Omarchy theme and a presentation font. Theme colors apply to text, code, and slide backgrounds; your images keep their original colors. Code stays monospaced.
+
+Colors and the font choice are saved in the Markdown file. Install the same font on another computer to keep the typography consistent.
+
+## Present and export
+
+Click **Present** or press **F5** to go fullscreen. Use the arrows to navigate, Space to play or pause video, and Escape to return to editing.
+
+Choose **Export → PDF** or **PowerPoint** to share your presentation. PowerPoint slides preserve the rendered appearance rather than exposing editable text and shapes; videos are embedded. PDF captures still slides.
+
+For PowerPoint video, use H.264 MP4 with optional AAC audio. Use `fit` for videos that aren’t 16:9. Video autoplay and looping may vary between presentation apps; playback in Microsoft PowerPoint has not yet been verified.
+
+## Keyboard shortcuts
+
+Slide navigation and selection shortcuts apply when the sidebar or preview has focus. Inside the Markdown editor, arrows and Shift+arrows move the cursor and select text.
+
+| Shortcut | Action |
+| --- | --- |
+| Ctrl+N / Ctrl+O | New presentation / open file |
+| Ctrl+S / Ctrl+Shift+S | Save / save as |
+| Ctrl+E | Switch Visual / Markdown |
+| Tab / Shift+Tab | Switch between sidebar and Markdown input |
+| Arrow keys | Previous / next slide |
+| Page Up / Page Down | Jump five slides |
+| Home / End | First / last slide |
+| Ctrl+Up or Ctrl+Left | Move selected slides earlier |
+| Ctrl+Down or Ctrl+Right | Move selected slides later |
+| Shift+arrows / Shift+click | Extend the slide selection |
+| Ctrl+Enter | Add a slide |
+| Ctrl+D | Duplicate selected slides |
+| Delete | Delete selected slides |
+| Ctrl+V | Paste text or add and name media |
+| Ctrl+Z / Ctrl+Shift+Z | Undo / redo |
+| F5 / Escape | Start / leave presentation |
+| Space | Play / pause video while presenting |
+
+The mouse wheel over the sidebar selects the previous or next slide. In the Markdown editor, Page Up/Down scrolls a page; Ctrl+Home/End goes to the start/end of the document.
+
+## Run from source
+
+Hype is currently installed from this checkout. On Omarchy/Arch, `./bin/install` builds and installs the package and adds Hype to the app launcher. Dependencies include Qt 6, FFmpeg, GNU source-highlight, and `python-pptx` for PowerPoint export; see [the package definition](pkgbuild/PKGBUILD) for the full list.
+
+To try it without installing the app:
 
 ```sh
 ./bin/build
 ./build/hype examples/welcome.md
 ```
 
-For development, run `./bin/install-dev` once to add **Hype (Development)** to the
-app launcher. It points to this checkout and runs an incremental build on every
-launch. Build failures produce a notification and a log at `build/dev-build.log`;
-runtime output goes to `build/dev-run.log`. Existing windows keep their running
-version, so close and reopen them after changes. You can also run `./bin/dev`
-directly, with the same arguments as `build/hype`.
-
-Launching without a filename reopens the last presentation you opened or saved.
-If that file is no longer available, Hype starts a new presentation.
-
-The visual editor has slides on the left and a preview on the right. Drag thumbnails to reorder their Markdown blocks. In Visual mode, the selected slide’s Markdown is always visible below the preview; drag the divider to resize it. Add, duplicate, delete, undo, and edit without switching modes. Switch to Markdown for the full document; the selected slide’s source opens at the top. Images and videos are copied beside the document into `images/` and `videos/`.
-
-Paste an image or a copied image/video file with Ctrl+V in either view. Hype asks
-for a filename, saves it in `images/` or `videos/`, and inserts its Markdown into
-the selected slide. Existing slide media is replaced while the text is kept.
-Clipboard images become PNGs; copied files keep their format. For a new
-presentation, save the Markdown file first when prompted.
-
-```markdown
-# A big idea
-
----
-
-![span](city.jpg)
-
-# A headline over a background
-
----
-
-> A quote worth sharing.
-
-— Its author
-
----
-
-![loop muted](demo.mp4)
-```
-
-A filename resolves in `images/` or `videos/` according to its extension. Empty brackets choose the defaults. `fit` preserves the complete image, `span` fills the slide, and `left`/`right` places an image beside text. A heading with an image makes it a background unless `fit` is explicit. Videos play once on entering the slide in presentation mode; `autoplay=false` waits for Space.
-
-Choose an installed Omarchy theme and presentation font from the toolbar. The font applies to slide text; code stays monospaced. Hype saves its colors in the Markdown front matter so the presentation keeps its palette when moved. Photos, logos, and screenshot pixels retain their original colors. Text, slide backgrounds, emphasis, quotes, and tables use the selected palette.
-
-## Trial presentations
-
-The private local `trials/` directory is excluded from Git. It contains Rails World 2023, 2024, and 2025 converted from `~/Dropbox/Documents/Presentations/`, with a slide-by-slide import report. See [the trial findings](TRIALS.md).
-
-```sh
-./build/hype trials/rails-world-2023/presentation.md
-./build/hype trials/rails-world-2024/presentation.md
-./build/hype trials/rails-world-2025/presentation.md
-```
-
-## Export
-
-PDF uses the same painter as the canvas. PowerPoint packages rendered slides and embeds video. Install its helper dependencies locally:
-
-```sh
-./bin/setup-export
-```
-
-For headless rendering, use `QT_QPA_PLATFORM=offscreen QT_QPA_PLATFORMTHEME=generic QT_STYLE_OVERRIDE=Fusion` if your desktop platform plugin is unavailable.
-
-```sh
-./build/hype presentation.md --pdf talk.pdf
-./build/hype presentation.md --pptx talk.pptx
-./build/hype presentation.md --render rendered-slides
-./build/hype presentation.md --theme nord --save
-```
-
-PowerPoint video requires H.264 video and optional AAC audio in MP4. For now, spanning video must be 16:9; use `fit` for other ratios. Automatic playback/loop metadata is written, but actual Microsoft PowerPoint playback still needs verification on a machine with PowerPoint. LibreOffice compatibility is checked locally.
-
-Contained images automatically extend their dominant edge color into the surrounding slide background. No directive is needed. Override it with **Background → Use theme color**, or an explicit color:
-
-```markdown
-![fit](diagram.png)
-![fit background=theme](photo.jpg)
-![left background=#ffffff](illustration.png)
-```
-
-Automatic matching uses the dominant opaque edge color. Transparent or varied edges fall back to the theme. Text switches to dark or white for readability; the image itself stays unchanged. Choose **Match image edges** to restore automatic matching. This applies to the canvas and rendered exports.
-
-Plain line breaks are preserved on slides: put each point or city on its own line without adding backslashes or trailing spaces.
-
-## Keys
-
-- Ctrl+E: toggle Visual / full-document Markdown.
-- Sidebar wheel: select the next/previous slide and update the preview.
-- Drag sidebar slides to reorder their Markdown blocks; hold near the top or bottom to scroll while dragging.
-- Ctrl+Up/Left or Ctrl+Down/Right: move selected slides earlier or later when not editing text.
-- Shift+arrows or Shift+click: extend the slide selection. Drag, move, duplicate, or delete the selected slides together.
-- Tab / Shift+Tab: switch between the sidebar and the Markdown input in either view.
-- Markdown: Page Up/Down moves a page; Home/End moves to the line boundaries; Ctrl+Home/End moves to the document boundaries. Shift extends the selection.
-- Ctrl+O: open. Ctrl+S: save. Ctrl+Shift+S: save as.
-- Ctrl+Enter: new slide. Ctrl+D: duplicate with the slide list/canvas focused.
-- Delete: remove the selected slide with the slide list/canvas focused.
-- Ctrl+Z / Ctrl+Shift+Z: document undo/redo.
-- Ctrl+V: paste and name an image or video; ordinary text pastes normally in the editors.
-- Arrow keys: previous/next slide in the visual editor or presentation. Page Up/Down: jump five slides. Home/End: first/last slide. Text fields keep their text-navigation behavior.
-- F5: present. Space: play/pause video. Escape: leave presentation.
-
-## Development
-
-Build dependencies: a C++17 compiler, make, `qt6-base`, `qt6-declarative`, `qt6-multimedia`. Runtime image support uses `qt6-svg`; video probing/posters use ffmpeg; code highlighting uses `source-highlight`. Tests additionally use Qt PDF. PowerPoint export uses Python and python-pptx (the local setup script pins 1.0.2). The trial conversion tools additionally use ImageMagick, PyYAML, and keynote-parser for recovering the 2023 archive; those are not app dependencies.
-
-```sh
-./bin/test
-HYPE_GUI_TESTS=1 ./bin/test visualOperations
-build/python/bin/python tests/test_export.py
-```
-
-The GUI test needs access to local multimedia services. It performs actual mouse dragging and clicks New Slide and Duplicate, then checks the source and undo. The other tests run offscreen without a desktop connection.
-
-`./bin/install` builds the Arch package. `python-pptx` currently needs an AUR or Omarchy package; the local virtual environment is enough to run from this checkout. No package has been installed system-wide.
-
-## First-build boundaries
-
-This is a working prototype. Text editing happens in the per-slide Markdown pane below the preview. Code is fitted and monospaced; language-tagged fences have theme-colored syntax highlighting. There is one media item per slide; existing collages can be imported as images. Interactive slides and thumbnails render asynchronously with a bounded image cache. Export remains synchronous, so export progress/cancellation remains to do. There is no general Keynote/PowerPoint import command in the app: the audited migration scripts are development tools. Installed themes, external-file conflict protection, save-as media copying, and source-based slide operations work, but this has not yet been used for a live talk.
-
-The full product plan is in [plans/hype.md](plans/hype.md).
-
-Use a language name on fenced code blocks, for example `ruby`, `javascript`, `bash`, or `json`. Unlabelled and unsupported languages remain plain. Highlight colors follow the selected theme in previews, PDF, and PowerPoint.
+Run `./bin/setup-export` to set up PowerPoint export dependencies locally. For a launcher entry that rebuilds this checkout when opened, run `./bin/install-dev` and choose **Hype (Development)**.

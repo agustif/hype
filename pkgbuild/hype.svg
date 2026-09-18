@@ -1,1 +1,57 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128"><rect x="8" y="8" width="112" height="112" rx="20" fill="#1a1b26"/><path d="M35 32v64m58-64v64M35 64h58" fill="none" stroke="#7aa2f7" stroke-width="13"/></svg>
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="32 40 448 448">
+  <title>Hype</title>
+  <desc>A glossy blue presentation screen in a pale metal frame on a transparent background.</desc>
+  <defs>
+    <linearGradient id="metal" x1="172" y1="86" x2="316" y2="354" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#fffaf4"/>
+      <stop offset=".35" stop-color="#eee5ea"/>
+      <stop offset=".7" stop-color="#c4b6cb"/>
+      <stop offset="1" stop-color="#94859f"/>
+    </linearGradient>
+    <linearGradient id="metalEdge" x1="180" y1="78" x2="314" y2="352" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#fffdf9"/>
+      <stop offset="1" stop-color="#685673"/>
+    </linearGradient>
+    <linearGradient id="stand" x1="214" y1="334" x2="288" y2="436" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#80758f"/>
+      <stop offset=".3" stop-color="#e9e2ef"/>
+      <stop offset=".6" stop-color="#bfb3cc"/>
+      <stop offset="1" stop-color="#84728f"/>
+    </linearGradient>
+    <linearGradient id="socket" x1="230" y1="108" x2="280" y2="322" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#252854"/>
+      <stop offset="1" stop-color="#637ab1"/>
+    </linearGradient>
+    <radialGradient id="screen" cx=".3" cy=".12" r="1">
+      <stop stop-color="#b5e8ff"/>
+      <stop offset=".34" stop-color="#70b7ff"/>
+      <stop offset=".7" stop-color="#4776e7"/>
+      <stop offset="1" stop-color="#35318e"/>
+    </radialGradient>
+    <linearGradient id="screenEdge" x1="210" y1="111" x2="290" y2="318" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#dbf5ff"/>
+      <stop offset=".5" stop-color="#8fbaff"/>
+      <stop offset="1" stop-color="#29246d"/>
+    </linearGradient>
+    <linearGradient id="sheen" x1="190" y1="112" x2="220" y2="245" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#f5f8ff" stop-opacity=".48"/>
+      <stop offset="1" stop-color="#f5f8ff" stop-opacity="0"/>
+    </linearGradient>
+    <linearGradient id="play" x1="218" y1="162" x2="283" y2="273" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#fffdf9"/>
+      <stop offset="1" stop-color="#d9e6ff"/>
+    </linearGradient>
+  </defs>
+  <path d="M239 340h34v57l72 33c12 5 10 22-3 22H170c-13 0-15-17-3-22l72-33Z" fill="#271732" opacity=".3"/>
+  <path d="M242 330h28v60l70 33c9 4 7 15-3 15H175c-10 0-12-11-3-15l70-33Z" fill="url(#stand)" stroke="#8f819b" stroke-width="2"/>
+  <path d="M181 425h150" fill="none" stroke="#f4edf7" stroke-width="3" stroke-linecap="round" opacity=".6"/>
+  <rect x="58" y="94" width="396" height="262" rx="28" fill="#271732" opacity=".32"/>
+  <rect x="58" y="80" width="396" height="262" rx="28" fill="url(#metal)" stroke="url(#metalEdge)" stroke-width="3"/>
+  <rect x="78" y="100" width="356" height="222" rx="15" fill="url(#socket)"/>
+  <rect x="84" y="112" width="344" height="204" rx="11" fill="#25245f"/>
+  <rect x="84" y="106" width="344" height="204" rx="11" fill="url(#screen)" stroke="url(#screenEdge)" stroke-width="2"/>
+  <path d="M98 119h316v76c-53-33-113-35-174-10-51 21-98 30-142 19Z" fill="url(#sheen)"/>
+  <path d="M102 114h195" fill="none" stroke="#e8f8ff" stroke-width="3" stroke-linecap="round" opacity=".55"/>
+  <path d="M228 161c-6-4-12 0-12 7v101c0 7 6 11 12 7l80-50c7-4 7-10 0-14Z" fill="#263e91" opacity=".5"/>
+  <path d="M228 155c-6-4-12 0-12 7v101c0 7 6 11 12 7l80-50c7-4 7-10 0-14Z" fill="url(#play)" stroke="#e7f3ff" stroke-width="2"/>
+</svg>
