@@ -4,7 +4,7 @@ pkgrel=1
 pkgdesc='Simple Markdown presentations with a visual slide editor'
 arch=('x86_64' 'aarch64')
 license=('MIT')
-depends=('qt6-base' 'qt6-declarative' 'qt6-multimedia' 'qt6-svg' 'ffmpeg' 'source-highlight' 'python' 'python-pptx' 'xdg-desktop-portal')
+depends=('qt6-base>=6.8' 'qt6-declarative>=6.8' 'qt6-multimedia' 'qt6-svg' 'ffmpeg' 'source-highlight' 'zlib' 'xdg-desktop-portal')
 makedepends=('gcc' 'make')
 source=()
 sha256sums=()
@@ -15,7 +15,6 @@ build() {
 package() {
   cd "$startdir/.."
   install -Dm755 build/hype "$pkgdir/usr/bin/hype"
-  install -Dm644 tools/export_pptx.py "$pkgdir/usr/share/hype/export_pptx.py"
   install -Dm644 pkgbuild/hype.desktop "$pkgdir/usr/share/applications/hype.desktop"
   install -Dm644 pkgbuild/hype.svg "$pkgdir/usr/share/icons/hicolor/scalable/apps/hype.svg"
   install -Dm644 LICENSE "$pkgdir/usr/share/licenses/hype/LICENSE"

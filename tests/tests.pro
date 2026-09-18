@@ -9,3 +9,6 @@ RESOURCES += ../src/resources.qrc
 
 SOURCES += ../src/syntax.cpp
 HEADERS += ../src/syntax.h
+SOURCES += ../src/pptx.cpp
+HEADERS += ../src/pptx.h
+LIBS += -lz

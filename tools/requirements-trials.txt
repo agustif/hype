@@ -1,3 +1,4 @@
-# Development-only tools used to recover the 2023 Keynote media.
+# Development-only tools for importing the trial Keynote and PowerPoint decks.
 keynote-parser==1.14.5.0
 PyYAML>=6
+python-pptx==1.0.2

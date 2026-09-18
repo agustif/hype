@@ -121,7 +121,7 @@ Colors and the font choice are saved in the Markdown file. Install the same font
 
 Click **Present** or press **F5** to go fullscreen. Use the arrows to navigate, Space to play or pause video, and Escape to return to editing.
 
-Choose **Export → PDF** or **PowerPoint** to share your presentation. PowerPoint slides preserve the rendered appearance rather than exposing editable text and shapes; videos are embedded. PDF captures still slides.
+Choose **Export → PDF** or **PowerPoint** to share your presentation. Both exports are built into Hype. PowerPoint slides preserve the rendered appearance rather than exposing editable text and shapes; videos are embedded. PDF captures still slides.
 
 For PowerPoint video, use H.264 MP4 with optional AAC audio. Use `fit` for videos that aren’t 16:9. Video autoplay and looping may vary between presentation apps; playback in Microsoft PowerPoint has not yet been verified.
 
@@ -160,4 +160,4 @@ To build Hype yourself, install a C++17 compiler, make, Qt 6.8 or newer, FFmpeg,
 ./build/hype examples/welcome.md
 ```
 
-Run `./bin/setup-export` to set up PowerPoint export dependencies locally. For a launcher entry that rebuilds this checkout when opened, run `./bin/install-dev` and choose **Hype (Development)**.
+For a launcher entry that rebuilds this checkout when opened, run `./bin/install-dev` and choose **Hype (Development)**.

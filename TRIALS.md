@@ -52,7 +52,7 @@ LibreOffice opened all three final PowerPoint files and exported them back to PD
 
 ```sh
 ./bin/build
-./bin/setup-export
+python -m venv build/python
 build/python/bin/python -m pip install -r tools/requirements-trials.txt
 ./bin/prepare-trials
 ```

@@ -1,4 +1,5 @@
 #include "deck.h"
+#include "pptx.h"
 #include "renderer.h"
 #include <QApplication>
 #include <QClipboard>
@@ -869,16 +870,9 @@ bool Deck::exportPptx(const QString &path) {
     QTemporaryDir temp;
     if (!renderImages(temp.path()))
         return false;
-    QString helper = QCoreApplication::applicationDirPath() + "/../tools/export_pptx.py";
-    if (!QFile::exists(helper))
-        helper = "/usr/share/hype/export_pptx.py";
-    QString python = QCoreApplication::applicationDirPath() + "/python/bin/python";
-    if (!QFile::exists(python))
-        python = "python";
-    QProcess process;
-    process.start(python, {helper, temp.path() + "/slides.json", path});
-    if (!process.waitForFinished(120000) || process.exitCode() != 0) {
-        setStatus("PowerPoint export failed: " + QString::fromUtf8(process.readAllStandardError()));
+    QString error;
+    if (!writePptx(temp.path() + "/slides.json", path, &error)) {
+        setStatus("PowerPoint export failed: " + error);
         return false;
     }
     setStatus("Exported " + path);

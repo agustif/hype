@@ -15,7 +15,7 @@ done
 PYTHON="$ROOT/build/python/bin/python"
 KEYNOTE="$ROOT/build/python/bin/keynote-parser"
 test -x "$PYTHON" && test -x "$KEYNOTE" || {
-  echo 'Run bin/setup-export, then build/python/bin/python -m pip install -r tools/requirements-trials.txt' >&2
+  echo 'Run python -m venv build/python, then build/python/bin/python -m pip install -r tools/requirements-trials.txt' >&2
   exit 1
 }
 SAL_USE_VCLPLUGIN=svp libreoffice "-env:UserInstallation=file://$WORK/lo" --headless --convert-to pptx --outdir "$WORK" "$PRESENTATIONS/2023/Rails World/Rails World 2024.key"
