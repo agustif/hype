@@ -6,3 +6,6 @@ INCLUDEPATH += ../src
 SOURCES += tests.cpp ../src/deck.cpp ../src/renderer.cpp
 HEADERS += ../src/deck.h ../src/renderer.h
 RESOURCES += ../src/resources.qrc
+
+SOURCES += ../src/syntax.cpp
+HEADERS += ../src/syntax.h

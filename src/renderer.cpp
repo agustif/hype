@@ -1,4 +1,5 @@
 #include "renderer.h"
+#include "syntax.h"
 #include <QAbstractTextDocumentLayout>
 #include <QCache>
 #include <QCryptographicHash>
@@ -17,7 +18,7 @@
 #include <QTextTable>
 
 static QRegularExpression mediaRe(R"(!\[([^\]]*)\]\((?:<([^>]+)>|([^\s)]+))\))");
-static QString outsideCode(QString source) {
+static QString outsideCode(QString source, bool maskInline = true) {
     int position = 0, fenceLength = 0;
     QChar fence;
     QRegularExpression marker("^ {0,3}(`{3,}|~{3,})(.*)$");
@@ -42,6 +43,8 @@ static QString outsideCode(QString source) {
             source.replace(position, end - position, QString(end - position, ' '));
         position = end + 1;
     }
+    if (!maskInline)
+        return source;
     QRegularExpression inlineCode("(`+)([^`]|`(?!`))*?\\1");
     auto matches = inlineCode.globalMatch(source);
     QVector<QPair<int, int>> ranges;
@@ -226,9 +229,20 @@ static QString slideProperty(const QString &source, const QString &key) {
     QRegularExpression re("<!--\\s*hype:[\\s\\S]*?\\b" + key + "=\"([^\"]*)\"[\\s\\S]*?-->");
     return re.match(source).captured(1);
 }
+static QString preserveLineBreaks(QString markdown) {
+    markdown.replace("\r\n", "\n").replace('\r', '\n');
+    const QStringList visible = outsideCode(markdown, false).split('\n');
+    QStringList lines = markdown.split('\n');
+    for (int i = 0; i + 1 < lines.size(); ++i) {
+        if (!visible[i].trimmed().isEmpty() && !lines[i].endsWith("  ") && !lines[i].endsWith('\\'))
+            lines[i] += "  ";
+    }
+    return lines.join('\n');
+}
 static void textDocument(QTextDocument &doc, const QString &markdown, const QVariantMap &palette,
                          qreal fontSize, qreal width, bool centered, bool code) {
-    QFont font(palette.value("font", "JetBrains Mono").toString());
+    QFont font(code ? QString("JetBrains Mono")
+                    : palette.value("font", "JetBrains Mono").toString());
     font.setPixelSize(qRound(fontSize));
     font.setHintingPreference(QFont::PreferNoHinting);
     doc.setDefaultFont(font);
@@ -240,7 +254,7 @@ static void textDocument(QTextDocument &doc, const QString &markdown, const QVar
     doc.setDefaultStyleSheet(
         QString("body { color: %1; } a { color: %2; } pre { white-space: pre; }")
             .arg(palette["foreground"].toString(), palette["accent"].toString()));
-    doc.setMarkdown(markdown, QTextDocument::MarkdownDialectGitHub);
+    doc.setMarkdown(preserveLineBreaks(markdown), QTextDocument::MarkdownDialectGitHub);
     for (QTextBlock block = doc.begin(); block.isValid(); block = block.next()) {
         QTextCursor cursor(block);
         QTextBlockFormat bf = block.blockFormat();
@@ -399,7 +413,8 @@ void paintSlide(QPainter *p, const QRectF &target, const QString &source, const 
             centered = false;
         if (alignment == "center")
             centered = true;
-        bool stack = text.contains("\\\n") && !text.startsWith('#') && !quote && !list && !code;
+        bool stack = (text.contains('\n') || text.contains('\r')) && !text.startsWith('#') &&
+                     !quote && !list && !code;
         qreal low = 8, high = code ? 56 : quote ? 64 : list ? 72 : table ? 60 : stack ? 128 : 76;
         if (!media.file.isEmpty() && !media.span && media.side.isEmpty())
             high = 48;
@@ -417,6 +432,7 @@ void paintSlide(QPainter *p, const QRectF &target, const QString &source, const 
                 high = size;
         }
         textDocument(doc, text, palette, low, area.width(), centered, code);
+        highlightCode(doc, palette);
         if (low < 24 && warning)
             *warning = "Text fits below 24px on a 1080p slide";
         p->save();

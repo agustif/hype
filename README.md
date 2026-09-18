@@ -7,7 +7,7 @@ A small native Markdown presentation editor for Omarchy. The first working build
 ./build/hype examples/welcome.md
 ```
 
-The visual editor has slides on the left and a preview on the right. Drag thumbnails to reorder their Markdown blocks. Add, duplicate, delete, undo, and edit slide text from the visual side, or switch to the entire Markdown document. Images and videos are copied beside the document into `images/` and `videos/`.
+The visual editor has slides on the left and a preview on the right. Drag thumbnails to reorder their Markdown blocks. In Visual mode, the selected slide’s Markdown is always visible below the preview; drag the divider to resize it. Add, duplicate, delete, undo, and edit without switching modes. Switch to Markdown for the full document; the selected slide’s source opens at the top. Images and videos are copied beside the document into `images/` and `videos/`.
 
 ```markdown
 # A big idea
@@ -31,7 +31,7 @@ The visual editor has slides on the left and a preview on the right. Drag thumbn
 
 A filename resolves in `images/` or `videos/` according to its extension. Empty brackets choose the defaults. `fit` preserves the complete image, `span` fills the slide, and `left`/`right` places an image beside text. A heading with an image makes it a background unless `fit` is explicit. Videos play once on entering the slide in presentation mode; `autoplay=false` waits for Space.
 
-Choose an installed Omarchy theme from the toolbar. Hype saves its colors in the Markdown front matter so the presentation keeps its palette when moved. Photos, logos, and screenshot pixels retain their original colors. Text, slide backgrounds, emphasis, quotes, and tables use the selected palette.
+Choose an installed Omarchy theme and presentation font from the toolbar. The font applies to slide text; code stays monospaced. Hype saves its colors in the Markdown front matter so the presentation keeps its palette when moved. Photos, logos, and screenshot pixels retain their original colors. Text, slide backgrounds, emphasis, quotes, and tables use the selected palette.
 
 ## Trial presentations
 
@@ -72,19 +72,24 @@ Contained images automatically extend their dominant edge color into the surroun
 
 Automatic matching uses the dominant opaque edge color. Transparent or varied edges fall back to the theme. Text switches to dark or white for readability; the image itself stays unchanged. Choose **Match image edges** to restore automatic matching. This applies to the canvas and rendered exports.
 
+Plain line breaks are preserved on slides: put each point or city on its own line without adding backslashes or trailing spaces.
+
 ## Keys
 
+- Ctrl+E: toggle Visual / full-document Markdown.
+- Sidebar wheel: select the next/previous slide and update the preview.
+- Markdown: Page Up/Down moves a page; Home/End moves to the line boundaries; Ctrl+Home/End moves to the document boundaries. Shift extends the selection.
 - Ctrl+O: open. Ctrl+S: save. Ctrl+Shift+S: save as.
 - Ctrl+Enter: new slide. Ctrl+D: duplicate with the slide list/canvas focused.
 - Delete: remove the selected slide with the slide list/canvas focused.
 - Ctrl+Z / Ctrl+Shift+Z: document undo/redo.
 - Ctrl+V: paste an image with the canvas focused.
-- Left/Right: navigate in the visual editor or presentation (text fields keep normal cursor movement).
+- Left/Right or Page Up/Down: previous/next slide in the visual editor or presentation. Home/End: first/last slide. Text fields keep their text-navigation behavior.
 - F5: present. Space: play/pause video. Escape: leave presentation.
 
 ## Development
 
-Build dependencies: a C++17 compiler, make, `qt6-base`, `qt6-declarative`, `qt6-multimedia`. Runtime image support uses `qt6-svg`; video probing/posters use ffmpeg. Tests additionally use Qt PDF. PowerPoint export uses Python and python-pptx (the local setup script pins 1.0.2). The trial conversion tools additionally use ImageMagick, PyYAML, and keynote-parser for recovering the 2023 archive; those are not app dependencies.
+Build dependencies: a C++17 compiler, make, `qt6-base`, `qt6-declarative`, `qt6-multimedia`. Runtime image support uses `qt6-svg`; video probing/posters use ffmpeg; code highlighting uses `source-highlight`. Tests additionally use Qt PDF. PowerPoint export uses Python and python-pptx (the local setup script pins 1.0.2). The trial conversion tools additionally use ImageMagick, PyYAML, and keynote-parser for recovering the 2023 archive; those are not app dependencies.
 
 ```sh
 ./bin/test
@@ -98,6 +103,8 @@ The GUI test needs access to local multimedia services. It performs actual mouse
 
 ## First-build boundaries
 
-This is a working prototype. Text editing happens in the per-slide or full Markdown editor. Code is fitted and monospaced; syntax highlighting is not implemented yet. There is one media item per slide; existing collages can be imported as images. Interactive slides and thumbnails render asynchronously with a bounded image cache. Export remains synchronous, so export progress/cancellation remains to do. There is no general Keynote/PowerPoint import command in the app: the audited migration scripts are development tools. Installed themes, external-file conflict protection, save-as media copying, and source-based slide operations work, but this has not yet been used for a live talk.
+This is a working prototype. Text editing happens in the per-slide Markdown pane below the preview. Code is fitted and monospaced; language-tagged fences have theme-colored syntax highlighting. There is one media item per slide; existing collages can be imported as images. Interactive slides and thumbnails render asynchronously with a bounded image cache. Export remains synchronous, so export progress/cancellation remains to do. There is no general Keynote/PowerPoint import command in the app: the audited migration scripts are development tools. Installed themes, external-file conflict protection, save-as media copying, and source-based slide operations work, but this has not yet been used for a live talk.
 
 The full product plan is in [plans/hype.md](plans/hype.md).
+
+Use a language name on fenced code blocks, for example `ruby`, `javascript`, `bash`, or `json`. Unlabelled and unsupported languages remain plain. Highlight colors follow the selected theme in previews, PDF, and PowerPoint.

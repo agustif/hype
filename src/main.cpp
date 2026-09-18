@@ -21,7 +21,7 @@ int main(int argc, char **argv) {
     args.addOption({"theme", "Apply installed theme", "name"});
     args.addOption({"save", "Save changes (for theme snapshots)"});
     args.addOption({"slide", "Select a slide (1-based)", "number"});
-    args.addOption({"markdown", "Start in Markdown mode"});
+    args.addOption({"markdown", "Start in full-document Markdown mode"});
     args.addOption({"screenshot", "Save editor screenshot and exit", "file"});
     args.process(app);
     Deck deck;
@@ -61,7 +61,7 @@ int main(int argc, char **argv) {
     if (engine.rootObjects().isEmpty())
         return 1;
     if (args.isSet("markdown"))
-        engine.rootObjects().first()->setProperty("markdown", true);
+        QMetaObject::invokeMethod(engine.rootObjects().first(), "openMarkdown");
     if (args.isSet("screenshot")) {
         QTimer::singleShot(1800, &app, [&] {
             auto window = qobject_cast<QQuickWindow *>(engine.rootObjects().first());

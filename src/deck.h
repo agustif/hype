@@ -30,6 +30,8 @@ class Deck : public QAbstractListModel {
     Q_PROPERTY(QString path READ path NOTIFY changed)
     Q_PROPERTY(QString title READ title NOTIFY changed)
     Q_PROPERTY(QString status READ status NOTIFY statusChanged)
+    Q_PROPERTY(QStringList fontNames READ fontNames CONSTANT)
+    Q_PROPERTY(QString fontName READ fontName NOTIFY changed)
     Q_PROPERTY(QStringList themeNames READ themeNames CONSTANT)
     Q_PROPERTY(QString themeName READ themeName NOTIFY changed)
     Q_PROPERTY(QColor background READ background NOTIFY changed)
@@ -51,6 +53,9 @@ class Deck : public QAbstractListModel {
     QString path() const { return m_path; }
     QString title() const;
     QString status() const { return m_status; }
+    QStringList fontNames() const;
+    QString fontName() const;
+    Q_INVOKABLE void chooseFont(const QString &family);
     QStringList themeNames() const;
     QString themeName() const;
     QColor background() const;

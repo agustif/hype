@@ -16,7 +16,7 @@ ApplicationWindow {
     palette.mid: "#33467c"; palette.light: "#414868"; palette.dark: "#24283b"
     property var document: deck
     property bool markdown: false
-    property bool editing: false
+    property bool syncingEditor: false
     property bool presenting: false
     property bool allowClose: false
     property int lastSelected: -1
@@ -29,8 +29,53 @@ ApplicationWindow {
         if (presenting) { win.showFullScreen(); stage.forceActiveFocus() }
         else { player.stop(); win.showNormal() }
     }
+    function scrollEditor(flick, event) {
+        let delta = event.angleDelta.y ? event.angleDelta.y / 120 * 180 : event.pixelDelta.y
+        if (!delta) { event.accepted = false; return }
+        flick.cancelFlick()
+        flick.contentY = Math.max(0, Math.min(Math.max(0, flick.contentHeight - flick.height + flick.bottomMargin), flick.contentY - delta))
+        event.accepted = true
+    }
+    function editorKey(editor, flick, event) {
+        let control = event.modifiers & Qt.ControlModifier
+        if (control && event.key === Qt.Key_Z) {
+            event.accepted = true
+            event.modifiers & Qt.ShiftModifier ? deck.redo() : deck.undo()
+            return
+        }
+        let position = editor.cursorPosition
+        let scroll = flick.contentY
+        let page = event.key === Qt.Key_PageDown || event.key === Qt.Key_PageUp
+        if (page) {
+            let amount = Math.max(40, flick.height - 40) * (event.key === Qt.Key_PageDown ? 1 : -1)
+            let rect = editor.positionToRectangle(position)
+            position = editor.positionAt(rect.x, Math.max(0, rect.y + rect.height / 2 + amount))
+            scroll += amount
+        } else if (event.key === Qt.Key_Home) {
+            position = control || position === 0 ? 0 : editor.text.lastIndexOf("\n", position - 1) + 1
+        } else if (event.key === Qt.Key_End) {
+            let end = editor.text.indexOf("\n", position)
+            position = control || end < 0 ? editor.length : end
+        } else return
+        event.accepted = true
+        if (event.modifiers & Qt.ShiftModifier) editor.moveCursorSelection(position, TextEdit.SelectCharacters)
+        else editor.cursorPosition = position
+        if (page) flick.contentY = Math.max(0, Math.min(Math.max(0, flick.contentHeight - flick.height + flick.bottomMargin), scroll))
+    }
+    function focusMarkdown() {
+        if (markdown) alignSource()
+        else slideEditor.forceActiveFocus()
+    }
+    function openMarkdown() { setMarkdownMode(true) }
+    function setMarkdownMode(value) {
+        markdown = value
+        if (markdown) alignSource()
+        else stage.forceActiveFocus()
+    }
     function alignSource() {
+        syncingEditor = true
         sourceEditor.cursorPosition = deck.sourcePosition()
+        syncingEditor = false
         sourceEditor.forceActiveFocus()
         Qt.callLater(function() {
             let rect = sourceEditor.positionToRectangle(deck.sourcePosition())
@@ -38,10 +83,16 @@ ApplicationWindow {
         })
     }
     function syncEditors() {
+        syncingEditor = true
         if (sourceEditor.text !== deck.source) sourceEditor.text = deck.source
         if (slideEditor.text !== deck.slideSource) slideEditor.text = deck.slideSource
+        syncingEditor = false
+        if (lastSelected !== deck.selected) {
+            slideEditor.cursorPosition = 0
+            Qt.callLater(function() { slideScroll.contentItem.contentY = 0 })
+        }
     }
-    Component.onCompleted: { syncEditors(); Qt.callLater(function() { thumbnails.positionViewAtIndex(deck.selected, ListView.Contain) }) }
+    Component.onCompleted: { syncEditors(); Qt.callLater(function() { thumbnails.stopWheel(); thumbnails.positionViewAtIndex(deck.selected, ListView.Contain) }) }
     Connections {
         target: deck
         function onChanged() {
@@ -64,18 +115,21 @@ ApplicationWindow {
     Shortcut { sequences: [StandardKey.Open]; onActivated: deck.openDialog() }
     Shortcut { sequences: [StandardKey.Save]; onActivated: deck.save() }
     Shortcut { sequences: [StandardKey.SaveAs]; onActivated: deck.saveAs() }
+    Shortcut { sequence: "Ctrl+E"; enabled: !win.presenting; onActivated: win.setMarkdownMode(!win.markdown) }
     Shortcut { sequence: "Ctrl+N"; onActivated: deck.newDeck() }
     Shortcut { sequence: "F5"; onActivated: win.togglePresent() }
     Shortcut { sequence: "Escape"; enabled: win.presenting; onActivated: win.togglePresent() }
-    Shortcut { sequence: "Ctrl+Z"; enabled: !sourceEditor.activeFocus && !slideEditor.activeFocus; onActivated: deck.undo() }
-    Shortcut { sequence: "Ctrl+Shift+Z"; enabled: !sourceEditor.activeFocus && !slideEditor.activeFocus; onActivated: deck.redo() }
-    Shortcut { sequence: "Ctrl+D"; enabled: !sourceEditor.activeFocus && !slideEditor.activeFocus; onActivated: deck.duplicateSlide() }
-    Shortcut { sequence: "Ctrl+Return"; onActivated: { deck.addSlide(); win.editing = true; slideEditor.forceActiveFocus() } }
-    Shortcut { sequence: "Delete"; enabled: !sourceEditor.activeFocus && !slideEditor.activeFocus; onActivated: deck.deleteSlide() }
-    Shortcut { sequence: "Right"; enabled: win.presenting || (!sourceEditor.activeFocus && !slideEditor.activeFocus); onActivated: deck.select(deck.selected + 1) }
-    Shortcut { sequence: "Left"; enabled: win.presenting || (!sourceEditor.activeFocus && !slideEditor.activeFocus); onActivated: deck.select(deck.selected - 1) }
+    Shortcut { sequence: "Ctrl+Z"; enabled: !slideEditor.activeFocus && !sourceEditor.activeFocus; onActivated: deck.undo() }
+    Shortcut { sequence: "Ctrl+Shift+Z"; enabled: !slideEditor.activeFocus && !sourceEditor.activeFocus; onActivated: deck.redo() }
+    Shortcut { sequence: "Ctrl+D"; enabled: !slideEditor.activeFocus && !sourceEditor.activeFocus; onActivated: deck.duplicateSlide() }
+    Shortcut { sequence: "Ctrl+Return"; onActivated: { deck.addSlide(); win.focusMarkdown() } }
+    Shortcut { sequence: "Delete"; enabled: !slideEditor.activeFocus && !sourceEditor.activeFocus; onActivated: deck.deleteSlide() }
+    Shortcut { sequences: ["Right", "PgDown"]; enabled: win.presenting || (!slideEditor.activeFocus && !sourceEditor.activeFocus); onActivated: deck.select(deck.selected + 1) }
+    Shortcut { sequences: ["Left", "PgUp"]; enabled: win.presenting || (!slideEditor.activeFocus && !sourceEditor.activeFocus); onActivated: deck.select(deck.selected - 1) }
+    Shortcut { sequence: "Home"; enabled: win.presenting || (!win.markdown && !slideEditor.activeFocus); onActivated: deck.select(0) }
+    Shortcut { sequence: "End"; enabled: win.presenting || (!win.markdown && !slideEditor.activeFocus); onActivated: deck.select(deck.count - 1) }
     Shortcut { sequence: "Space"; enabled: win.presenting && deck.media.video; onActivated: player.playbackState === MediaPlayer.PlayingState ? player.pause() : player.play() }
-    Shortcut { sequence: "Ctrl+V"; enabled: !sourceEditor.activeFocus && !slideEditor.activeFocus; onActivated: deck.pasteImage() }
+    Shortcut { sequence: "Ctrl+V"; enabled: !slideEditor.activeFocus && !sourceEditor.activeFocus; onActivated: deck.pasteImage() }
     header: ToolBar {
         visible: !win.presenting; height: visible ? 60 : 0
         background: Rectangle { color: "#171923"; border.color: "#292e42" }
@@ -86,9 +140,8 @@ ApplicationWindow {
             ToolButton { text: "Open"; onClicked: deck.openDialog() }
             ToolButton { text: deck.dirty ? "Save •" : "Save"; onClicked: deck.save() }
             Item { Layout.fillWidth: true }
-            Button { text: "Visual"; highlighted: !win.markdown; onClicked: { win.markdown = false; stage.forceActiveFocus() } }
-            Button { text: "Markdown"; highlighted: win.markdown; onClicked: { win.markdown = true; win.alignSource() } }
-            Item { Layout.fillWidth: true }
+            Button { text: "Visual"; highlighted: !win.markdown; onClicked: win.setMarkdownMode(false) }
+            Button { text: "Markdown"; highlighted: win.markdown; onClicked: win.setMarkdownMode(true) }
             ComboBox { id: themes;
                 delegate: ItemDelegate {
                     required property string modelData
@@ -101,6 +154,47 @@ ApplicationWindow {
                 }
                 background: Rectangle { color: themes.hovered ? "#33467c" : "#24283b"; radius: 3 }
  model: deck.themeNames; currentIndex: Math.max(0, deck.themeNames.indexOf(deck.themeName)); onActivated: deck.chooseTheme(currentText); Layout.preferredWidth: 165 }
+            ComboBox {
+                id: fonts; objectName: "fontPicker"
+                property bool showNotoVariants: false
+                readonly property var visibleFonts: deck.fontNames.filter(function(name) {
+                    return showNotoVariants || !name.startsWith("Noto ") ||
+                        ["Noto Sans", "Noto Serif", "Noto Sans Mono", deck.fontName].indexOf(name) >= 0
+                })
+                model: visibleFonts.concat([showNotoVariants ? "Fewer Noto fonts" : "More Noto fonts…"])
+                currentIndex: visibleFonts.indexOf(deck.fontName)
+                displayText: deck.fontName
+                onActivated: function(index) {
+                    if (index === visibleFonts.length) {
+                        showNotoVariants = !showNotoVariants
+                        currentIndex = Qt.binding(function() { return fonts.visibleFonts.indexOf(deck.fontName) })
+                        Qt.callLater(function() { fonts.popup.open() })
+                    } else deck.chooseFont(visibleFonts[index])
+                }
+                Layout.preferredWidth: 190
+                delegate: ItemDelegate {
+                    required property string modelData
+                    required property int index
+                    width: fonts.popup.availableWidth; text: modelData
+                    highlighted: fonts.highlightedIndex === index
+                    contentItem: Text { text: modelData; color: "#c0caf5"; font: fonts.font; elide: Text.ElideRight; verticalAlignment: Text.AlignVCenter }
+                    background: Rectangle { color: parent.highlighted ? "#33467c" : "#171923" }
+                }
+                background: Rectangle { color: fonts.hovered ? "#33467c" : "#24283b"; radius: 3 }
+                popup: Popup {
+                    y: fonts.height + 4; width: 320; padding: 6
+                    height: Math.min(contentItem.implicitHeight + 12, 420, win.height - 100)
+                    background: Rectangle { color: "#171923"; border.color: "#34384b"; radius: 3 }
+                    contentItem: ListView {
+                        clip: true; implicitHeight: contentHeight
+                        model: fonts.popup.visible ? fonts.delegateModel : null
+                        currentIndex: fonts.highlightedIndex
+                        ScrollBar.vertical: ScrollBar {}
+                    }
+                    onOpened: contentItem.positionViewAtIndex(fonts.currentIndex, ListView.Contain)
+                }
+                ToolTip.visible: hovered; ToolTip.text: "Presentation font"
+            }
             Button { text: "▶ Present"; onClicked: win.togglePresent() }
             Button { text: "Export"; onClicked: exportMenu.open(); Menu { id: exportMenu; MenuItem { text: "PDF"; onTriggered: deck.exportDialog("pdf") } MenuItem { text: "PowerPoint"; onTriggered: deck.exportDialog("pptx") } } }
         }
@@ -124,13 +218,38 @@ ApplicationWindow {
                     id: thumbnails; objectName: "thumbnails"; Layout.fillWidth: true; Layout.fillHeight: true; clip: true
                     model: deck; spacing: 10; currentIndex: deck.selected
                     ScrollBar.vertical: ScrollBar {}
-                    WheelHandler {
-                        onWheel: function(event) {
-                            let delta = event.pixelDelta.y || event.angleDelta.y / 120 * 100
-                            thumbnails.contentY = Math.max(0, Math.min(Math.max(0, thumbnails.contentHeight - thumbnails.height), thumbnails.contentY - delta))
-                            event.accepted = true
-                        }
+                    property int wheelDirection: 0
+                    property real wheelRemainder: 0
+                    readonly property real slideStep: 136 + spacing
+                    function stopWheel() {
+                        wheelDirection = 0
+                        wheelRemainder = 0
                     }
+                    function scrollWheel(event) {
+                        let pixels = event.pixelDelta.y
+                        let delta = event.angleDelta.y || pixels
+                        if (!delta) { event.accepted = false; return }
+                        cancelFlick()
+                        let direction = Math.sign(delta)
+                        if (direction !== wheelDirection) wheelRemainder = 0
+                        wheelDirection = direction
+                        // Accumulate high-resolution input, but always move whole slides.
+                        // Prefer wheel angles even when Qt also supplies a pixel delta.
+                        wheelRemainder += event.angleDelta.y ? event.angleDelta.y / 120 : pixels / slideStep
+                        let steps = Math.trunc(wheelRemainder)
+                        if (!steps) { event.accepted = true; return }
+                        wheelRemainder -= steps
+                        stage.forceActiveFocus()
+                        deck.select(deck.selected - steps)
+                        if (win.markdown) win.alignSource()
+                        event.accepted = true
+                    }
+                    WheelHandler {
+                        acceptedDevices: PointerDevice.Mouse | PointerDevice.TouchPad
+                        target: null
+                        onWheel: function(event) { thumbnails.scrollWheel(event) }
+                    }
+                    onMovementStarted: stopWheel()
                     delegate: Item {
                         id: thumbnail; required property int index; required property string slideTitle; required property int number
                         width: thumbnails.width; height: 136
@@ -147,6 +266,7 @@ ApplicationWindow {
                             anchors.fill: parent; acceptedButtons: Qt.LeftButton | Qt.RightButton
                             property real pressY: 0
                             onPressed: function(mouse) {
+                                thumbnails.stopWheel()
                                 deck.select(thumbnail.index); stage.forceActiveFocus(); pressY = mouse.y
                                 if (mouse.button === Qt.RightButton) slideMenu.popup()
                             }
@@ -163,7 +283,7 @@ ApplicationWindow {
                             onReleased: { if (win.dragIndex >= 0) { let from=win.dragIndex; let to=win.dropIndex; win.dragIndex=-1; win.dropIndex=-1; deck.moveSlide(from,to) } }
                             onCanceled: { win.dragIndex=-1; win.dropIndex=-1 }
                             onClicked: { if (win.markdown) win.alignSource() }
-                            onDoubleClicked: { win.editing=true; slideEditor.forceActiveFocus() }
+                            onDoubleClicked: { win.focusMarkdown() }
                         }
                     }
                     Timer {
@@ -174,23 +294,28 @@ ApplicationWindow {
                         }
                     }
                     Menu { id: slideMenu
-                        MenuItem { text: "New slide after this"; onTriggered: { deck.addSlide(); win.editing=true; slideEditor.forceActiveFocus() } }
+                        MenuItem { text: "New slide after this"; onTriggered: { deck.addSlide(); win.focusMarkdown() } }
                         MenuItem { text: "Duplicate slide"; onTriggered: deck.duplicateSlide() }
                         MenuItem { text: "Delete slide"; onTriggered: deck.deleteSlide() }
                     }
                 }
-                Button { objectName: "newSlideButton"; text: "+ New slide"; Layout.fillWidth: true; onClicked: { deck.addSlide(); win.markdown=false; win.editing=true; slideEditor.forceActiveFocus() } }
+                Button { objectName: "newSlideButton"; text: "+ New slide"; Layout.fillWidth: true; onClicked: { deck.addSlide(); win.focusMarkdown() } }
                 RowLayout { Layout.fillWidth: true
                     Button { objectName: "duplicateButton"; text: "Duplicate"; Layout.fillWidth: true; onClicked: deck.duplicateSlide() }
                     Button { text: "Undo"; onClicked: deck.undo() }
                 }
             }
         }
-        ColumnLayout {
-            Layout.fillWidth: true; Layout.fillHeight: true; spacing: 0
+        SplitView {
+            id: workspace; orientation: Qt.Vertical
+            visible: !win.markdown || win.presenting
+            Layout.fillWidth: true; Layout.fillHeight: true
+            handle: Rectangle {
+                implicitHeight: win.presenting ? 0 : 6
+                color: SplitHandle.hovered || SplitHandle.pressed ? "#7aa2f7" : "#292e42"
+            }
             Item {
-                id: stage; objectName: "stage"; Layout.fillWidth: true; Layout.fillHeight: true; focus: true
-                visible: !win.markdown || win.presenting
+                id: stage; objectName: "stage"; SplitView.fillHeight: true; SplitView.minimumHeight: 160; focus: true
                 property real margin: win.presenting ? 0 : 32
                 property real slideWidth: Math.min(width-margin*2,(height-margin*2)*16/9)
                 Item {
@@ -209,22 +334,16 @@ ApplicationWindow {
                 }
                 DropArea { anchors.fill: parent; onDropped: function(drop) { if(drop.hasUrls) for(let url of drop.urls) deck.importMedia(url) } }
             }
-            ScrollView {
-                id: sourceScroll; objectName: "sourceScroll"
-                visible: win.markdown && !win.presenting; Layout.fillWidth: true; Layout.fillHeight: true; clip: true
-                TextArea {
-                    id: sourceEditor; objectName: "sourceEditor"; text: ""; color: "#c0caf5"; selectionColor: "#33467c"
-                    font.family: "JetBrains Mono"; font.pixelSize: 18; wrapMode: TextEdit.NoWrap; leftPadding: 32; topPadding: 30
-                    onTextChanged: { if(activeFocus && text !== deck.source) deck.editSource(text) }
-                    onCursorPositionChanged: { if(activeFocus) deck.selectAt(cursorPosition) }
-                    Keys.onPressed: function(event) { if(event.modifiers & Qt.ControlModifier && event.key === Qt.Key_Z) { event.accepted=true; event.modifiers & Qt.ShiftModifier ? deck.redo() : deck.undo() } }
-                }
-            }
+            ColumnLayout {
+                id: editorPane; objectName: "editorPane"
+                visible: !win.presenting; spacing: 0
+                SplitView.preferredHeight: 250; SplitView.minimumHeight: 140
+                SplitView.maximumHeight: workspace.height * 0.65
             ToolBar {
-                visible: !win.markdown && !win.presenting; Layout.fillWidth: true
+                Layout.fillWidth: true
                 background: Rectangle { color: "#171923" }
                 RowLayout { anchors.fill: parent; anchors.leftMargin: 20; spacing: 12
-                    Button { text: win.editing ? "Hide text" : "Edit text"; onClicked: {win.editing=!win.editing; if(win.editing)slideEditor.forceActiveFocus()} }
+                    Label { text: "Markdown"; color: "#7f89ac"; font.pixelSize: 12 }
                     Button { text: "+ Image / video"; onClicked: deck.importDialog() }
                     Button { text: "Fit"; onClicked: deck.setMediaMode("fit") }
                     Button { text: "Span"; onClicked: deck.setMediaMode("span") }
@@ -235,13 +354,45 @@ ApplicationWindow {
                 }
             }
             ScrollView {
-                visible: win.editing && !win.markdown && !win.presenting; Layout.fillWidth: true; Layout.preferredHeight: 190; clip: true
-                TextArea {
-                    id: slideEditor; objectName: "slideEditor"; color: "#c0caf5"; font.family: "JetBrains Mono"; font.pixelSize: 16
-                    wrapMode: TextEdit.Wrap; leftPadding: 24; topPadding: 16; placeholderText: "# Your headline"
-                    onTextChanged: { if(activeFocus && text !== deck.slideSource) deck.editSlide(text) }
-                    Keys.onPressed: function(event) { if(event.modifiers & Qt.ControlModifier && event.key === Qt.Key_Z) { event.accepted=true; event.modifiers & Qt.ShiftModifier ? deck.redo() : deck.undo() } }
+                id: slideScroll; objectName: "slideScroll"
+                Layout.fillWidth: true; Layout.fillHeight: true; clip: true
+                WheelHandler {
+                        acceptedDevices: PointerDevice.Mouse | PointerDevice.TouchPad
+                    target: null
+                    onWheel: function(event) { win.scrollEditor(slideScroll.contentItem, event) }
                 }
+                TextArea {
+                    id: slideEditor; objectName: "slideEditor"; textFormat: TextEdit.PlainText; color: "#c0caf5"; font.family: "JetBrains Mono"; font.pixelSize: 16
+                    wrapMode: TextEdit.Wrap; leftPadding: 24; topPadding: 16; placeholderText: "# Your headline"
+                    onTextChanged: { if(!win.syncingEditor && activeFocus && text !== deck.slideSource) deck.editSlide(text) }
+                    Keys.onPressed: function(event) { win.editorKey(slideEditor, slideScroll.contentItem, event) }
+                }
+            }
+            }
+        }
+        ScrollView {
+            id: sourceScroll; objectName: "sourceScroll"
+            visible: win.markdown && !win.presenting
+            Layout.fillWidth: true; Layout.fillHeight: true; clip: true
+            Flickable {
+                id: sourceFlick; objectName: "sourceFlick"
+                clip: true; boundsBehavior: Flickable.StopAtBounds
+                bottomMargin: height - 60
+                WheelHandler {
+                        acceptedDevices: PointerDevice.Mouse | PointerDevice.TouchPad
+                    target: null
+                    onWheel: function(event) { win.scrollEditor(sourceFlick, event) }
+                }
+                TextArea.flickable: TextArea {
+                id: sourceEditor; objectName: "sourceEditor"
+                textFormat: TextEdit.PlainText
+                color: "#c0caf5"; selectionColor: "#33467c"
+                font.family: "JetBrains Mono"; font.pixelSize: 18
+                wrapMode: TextEdit.NoWrap; leftPadding: 32; topPadding: 30; bottomPadding: 30
+                onTextChanged: { if (!win.syncingEditor && activeFocus && text !== deck.source) deck.editSource(text) }
+                onCursorPositionChanged: { if (!win.syncingEditor && activeFocus) deck.selectAt(cursorPosition) }
+                Keys.onPressed: function(event) { win.editorKey(sourceEditor, sourceFlick, event) }
+            }
             }
         }
     }

@@ -7,6 +7,7 @@
 #include <QDir>
 #include <QFileDialog>
 #include <QFileInfo>
+#include <QFontDatabase>
 #include <QImageWriter>
 #include <QJsonArray>
 #include <QJsonDocument>
@@ -299,6 +300,14 @@ void Deck::discoverThemes() {
             if (QFile::exists(path))
                 m_themes[name] = path;
         }
+}
+QStringList Deck::fontNames() const { return QFontDatabase::families(); }
+QString Deck::fontName() const { return scalar(m_parsed.header, "font", "JetBrains Mono"); }
+void Deck::chooseFont(const QString &family) {
+    if (!fontNames().contains(family) || family == fontName())
+        return;
+    const QString header = setScalar(m_parsed.header, "font", family);
+    apply(header + m_source.mid(m_parsed.header.size()), m_selected);
 }
 QStringList Deck::themeNames() const { return m_themes.keys(); }
 QString Deck::themeName() const { return scalar(m_parsed.header, "theme", "tokyo-night"); }

@@ -1,5 +1,6 @@
 #include "deck.h"
 #include "renderer.h"
+#include "syntax.h"
 #include <QFile>
 #include <QImage>
 #include <QPainter>
@@ -9,6 +10,7 @@
 #include <QQuickStyle>
 #include <QQuickWindow>
 #include <QTemporaryDir>
+#include <QTextCursor>
 #include <QtTest>
 
 class HypeTests : public QObject {
@@ -194,30 +196,155 @@ class HypeTests : public QObject {
         QCOMPARE(d.selected(), 1);
         QTest::keyClick(window, Qt::Key_Left);
         QCOMPARE(d.selected(), 0);
+        QTest::keyClick(window, Qt::Key_PageDown);
+        QCOMPARE(d.selected(), 1);
+        QTest::keyClick(window, Qt::Key_PageUp);
+        QCOMPARE(d.selected(), 0);
+        QTest::keyClick(window, Qt::Key_PageUp);
+        QCOMPARE(d.selected(), 0);
+        QTest::keyClick(window, Qt::Key_End);
+        QCOMPARE(d.selected(), d.count() - 1);
+        QTest::keyClick(window, Qt::Key_PageDown);
+        QCOMPARE(d.selected(), d.count() - 1);
+        QTest::keyClick(window, Qt::Key_Home);
+        QCOMPARE(d.selected(), 0);
         QTest::qWait(100);
         auto point = list->mapToScene(QPointF(100, 70));
-        QWheelEvent wheel(point, window->mapToGlobal(point.toPoint()), QPoint(), QPoint(0, -120),
-                          Qt::NoButton, Qt::NoModifier, Qt::NoScrollPhase, false);
-        QCoreApplication::sendEvent(window, &wheel);
-        QTRY_VERIFY(list->property("contentY").toReal() > 0);
+        auto wheel = [&](int angle, int pixels = 0) {
+            QWheelEvent event(point, window->mapToGlobal(point.toPoint()), QPoint(0, pixels),
+                              QPoint(0, angle), Qt::NoButton, Qt::NoModifier,
+                              pixels ? Qt::ScrollUpdate : Qt::NoScrollPhase, false);
+            QCoreApplication::sendEvent(window, &event);
+        };
+        QPointingDevice touchpad(
+            "Test touchpad", 1001, QInputDevice::DeviceType::TouchPad,
+            QPointingDevice::PointerType::Finger,
+            QInputDevice::Capability::Position | QInputDevice::Capability::Scroll, 5, 0);
+        QWheelEvent touchpadWheel(point, window->mapToGlobal(point.toPoint()), QPoint(0, -146),
+                                  QPoint(0, -120), Qt::NoButton, Qt::NoModifier, Qt::ScrollUpdate,
+                                  false, Qt::MouseEventSynthesizedBySystem, &touchpad);
+        QCoreApplication::sendEvent(window, &touchpadWheel);
+        QCOMPARE(d.selected(), 1);
+        QWheelEvent pixelWheel(point, window->mapToGlobal(point.toPoint()), QPoint(0, -146),
+                               QPoint(), Qt::NoButton, Qt::NoModifier, Qt::ScrollUpdate, false,
+                               Qt::MouseEventSynthesizedBySystem, &touchpad);
+        QCoreApplication::sendEvent(window, &pixelWheel);
+        QCOMPARE(d.selected(), 2);
+        d.select(0);
+        QTest::qWait(60);
+        wheel(-120);
+        QCOMPARE(d.selected(), 1);
+        wheel(-120);
+        wheel(-120);
+        wheel(-60);
+        QCOMPARE(d.selected(), 3);
+        wheel(-60);
+        QCOMPARE(d.selected(), 4);
+        wheel(120);
+        QCOMPARE(d.selected(), 3);
+        wheel(-120, -17);
+        QCOMPARE(d.selected(), 4);
+        wheel(12000);
+        QCOMPARE(d.selected(), 0);
+        wheel(-12000);
+        QCOMPARE(d.selected(), d.count() - 1);
+        QTest::qWait(60);
+        QVERIFY(list->property("contentY").toDouble() > 0);
         d.select(20);
-        window->setProperty("markdown", true);
-        QVERIFY(QMetaObject::invokeMethod(window, "alignSource"));
-        QTest::qWait(100);
-        auto editor = window->findChild<QQuickItem *>("sourceEditor");
-        QCOMPARE(editor->property("cursorPosition").toInt(), d.sourcePosition());
-        auto scroll = window->findChild<QObject *>("sourceScroll");
-        auto flick = scroll->property("contentItem").value<QObject *>();
-        QVERIFY(flick->property("contentY").toReal() > 100);
-        QRectF rectangle;
-        QVERIFY(QMetaObject::invokeMethod(editor, "positionToRectangle",
-                                          Q_RETURN_ARG(QRectF, rectangle),
-                                          Q_ARG(int, d.sourcePosition())));
-        QVERIFY(qAbs(flick->property("contentY").toReal() -
-                     (rectangle.y() - editor->property("topPadding").toReal())) < 2);
+        auto editor = window->findChild<QQuickItem *>("slideEditor");
+        QVERIFY(editor && editor->isVisible() && stage->isVisible());
+        editor->forceActiveFocus();
+        QVERIFY(editor->hasActiveFocus());
+        QCOMPARE(editor->property("text").toString(), d.slideSource());
+        QVERIFY(editor->mapToScene(QPointF()).y() >=
+                stage->mapToScene(QPointF(0, stage->height())).y());
+        QString before = d.slideSource();
+        QTest::keyClick(window, Qt::Key_End, Qt::ControlModifier);
+        QTest::keyClick(window, Qt::Key_X);
+        QCOMPARE(d.slideSource().trimmed(), (before + "x").trimmed());
+        QString edited = d.source();
+        d.select(21); // Selection while editing must not write the new slide over the old one.
+        QCOMPARE(d.source(), edited);
+        QCOMPARE(editor->property("text").toString(), d.slideSource());
+        QCOMPARE(editor->property("cursorPosition").toInt(), 0);
         int selected = d.selected();
         QTest::keyClick(window, Qt::Key_Right);
         QCOMPARE(d.selected(), selected);
+        QString beforeToggle = d.source();
+        QTest::keyClick(window, Qt::Key_E, Qt::ControlModifier);
+        QVERIFY(window->property("markdown").toBool());
+        auto source = window->findChild<QQuickItem *>("sourceEditor");
+        QVERIFY(source && source->isVisible() && source->hasActiveFocus());
+        QVERIFY(!stage->isVisible());
+        QCOMPARE(source->property("text").toString(), d.source());
+        QCOMPARE(source->property("cursorPosition").toInt(), d.sourcePosition());
+        QTest::qWait(60);
+        auto scroll = window->findChild<QObject *>("sourceScroll");
+        auto flick = scroll->property("contentItem").value<QObject *>();
+        QRectF rect;
+        QVERIFY(QMetaObject::invokeMethod(source, "positionToRectangle", Q_RETURN_ARG(QRectF, rect),
+                                          Q_ARG(int, d.sourcePosition())));
+        QVERIFY(qAbs(flick->property("contentY").toDouble() - rect.y() +
+                     source->property("topPadding").toDouble()) < 2);
+        QCOMPARE(d.source(), beforeToggle);
+        QTest::keyClick(window, Qt::Key_Home, Qt::ControlModifier);
+        QCOMPARE(source->property("cursorPosition").toInt(), 0);
+        QTest::keyClick(window, Qt::Key_PageDown);
+        QVERIFY(source->property("cursorPosition").toInt() > 0);
+        QVERIFY(flick->property("contentY").toDouble() > 0);
+        QTest::keyClick(window, Qt::Key_PageUp);
+        QCOMPARE(source->property("cursorPosition").toInt(), 0);
+        QTest::keyClick(window, Qt::Key_Right);
+        QTest::keyClick(window, Qt::Key_End);
+        QCOMPARE(source->property("cursorPosition").toInt(), d.source().indexOf('\n'));
+        QTest::keyClick(window, Qt::Key_Home);
+        QCOMPARE(source->property("cursorPosition").toInt(), 0);
+        QTest::keyClick(window, Qt::Key_End, Qt::ControlModifier);
+        QCOMPARE(source->property("cursorPosition").toInt(), d.source().size());
+        QTest::keyClick(window, Qt::Key_Home, Qt::ControlModifier);
+        QTest::qWait(60);
+        auto sourceFlick = window->findChild<QQuickItem *>("sourceFlick");
+        QPointF sourcePoint = sourceFlick->mapToScene(QPointF(100, 100));
+        double initialScroll = flick->property("contentY").toDouble();
+        QWheelEvent textWheel(sourcePoint, window->mapToGlobal(sourcePoint.toPoint()), QPoint(),
+                              QPoint(0, -120), Qt::NoButton, Qt::NoModifier, Qt::NoScrollPhase,
+                              false);
+        QCoreApplication::sendEvent(window, &textWheel);
+        QCOMPARE(flick->property("contentY").toDouble(), initialScroll + 180);
+        QCOMPARE(d.source(), beforeToggle);
+
+        QTest::keyClick(window, Qt::Key_E, Qt::ControlModifier);
+        QVERIFY(!window->property("markdown").toBool());
+        QVERIFY(stage->isVisible() && editor->isVisible());
+        QVERIFY(stage->hasActiveFocus());
+        window->setProperty("presenting", true);
+        QVERIFY(!window->findChild<QQuickItem *>("editorPane")->isVisible());
+        QVERIFY(stage->isVisible());
+        window->setProperty("presenting", false);
+        QVERIFY(editor->isVisible());
+        QString trial2025 = QFINDTESTDATA("../trials/rails-world-2025/presentation.md");
+        if (!trial2025.isEmpty()) {
+            QVERIFY(d.loadPath(trial2025));
+            for (int slide : {1, 60, 121}) {
+                d.select(slide);
+                QVERIFY(QMetaObject::invokeMethod(window, "openMarkdown"));
+                QTest::qWait(100);
+                QCOMPARE(source->property("text").toString(), d.source());
+                QImage screenshot = window->grabWindow();
+                auto sourceFlick = window->findChild<QQuickItem *>("sourceFlick");
+                QVERIFY(sourceFlick);
+                QRect area(sourceFlick->mapToScene(QPointF(40, 30)).toPoint(), QSize(700, 300));
+                int textPixels = 0;
+                for (int y = area.top(); y < area.bottom(); ++y)
+                    for (int x = area.left(); x < area.right(); ++x) {
+                        QColor pixel = screenshot.pixelColor(x, y);
+                        if (pixel.red() > 120 && pixel.green() > 120 && pixel.blue() > 120)
+                            ++textPixels;
+                    }
+                QVERIFY2(textPixels > 200,
+                         "Scrolled Markdown viewport must draw source text, not a blank pane");
+            }
+        }
         window->setProperty("allowClose", true);
         window->close();
     }
@@ -238,6 +365,27 @@ class HypeTests : public QObject {
         d.importMedia(QUrl::fromLocalFile(tmp.path() + "/source/photo.png"));
         QCOMPARE(QDir(tmp.path() + "/deck/images").entryList(QDir::Files).size(), 2);
         QVERIFY(d.source().contains("photo-2.png"));
+    }
+    void fontSelection() {
+        Deck d;
+        QVERIFY(!d.fontNames().isEmpty());
+        const QString original = d.source();
+        QString family = d.fontNames().first();
+        if (family == d.fontName())
+            family = d.fontNames().last();
+        d.chooseFont(family);
+        QCOMPARE(d.fontName(), family);
+        QCOMPARE(d.palette()["font"].toString(), family);
+        QString changed = d.source();
+        d.chooseFont("No such installed font");
+        QCOMPARE(d.source(), changed);
+        QTemporaryDir tmp;
+        QVERIFY(d.savePath(tmp.path() + "/font.md"));
+        Deck reopened;
+        QVERIFY(reopened.loadPath(tmp.path() + "/font.md"));
+        QCOMPARE(reopened.fontName(), family);
+        d.undo();
+        QCOMPARE(d.source(), original);
     }
     void themeSnapshot() {
         Deck d;
@@ -322,6 +470,54 @@ class HypeTests : public QObject {
         QSignalSpy resets(&d, &QAbstractItemModel::modelReset);
         d.editSlide("# Updated");
         QCOMPARE(resets.count(), 0);
+    }
+    void syntaxColors() {
+        Deck deck;
+        QTextDocument doc;
+        doc.setMarkdown("# Ruby\n\n```ruby\nclass Post\n  # café\n  puts "
+                        "\"héllo\"\nend\n```\n\nPlain text\n\n```javascript\nconst n = 42;\n```\n");
+        QString original = doc.toPlainText();
+        highlightCode(doc, deck.palette());
+        QCOMPARE(doc.toPlainText(), original);
+        auto colorAt = [&](QString token) {
+            QTextCursor cursor(&doc);
+            cursor.setPosition(original.indexOf(token));
+            cursor.movePosition(QTextCursor::NextCharacter, QTextCursor::KeepAnchor);
+            return cursor.charFormat().foreground().color();
+        };
+        QCOMPARE(colorAt("class"), QColor(deck.palette()["magenta"].toString()));
+        QCOMPARE(colorAt("héllo"), QColor(deck.palette()["green"].toString()));
+        QCOMPARE(colorAt("const"), QColor(deck.palette()["magenta"].toString()));
+        QCOMPARE(colorAt("42"), QColor(deck.palette()["red"].toString()));
+        auto palette = deck.palette();
+        palette["green"] = "#123456";
+        highlightCode(doc, palette);
+        QCOMPARE(colorAt("héllo"), QColor("#123456"));
+        QTextDocument plain;
+        plain.setMarkdown("```unknownlanguage\nclass Post\n```\n\n```\nclass Plain\n```");
+        original = plain.toPlainText();
+        highlightCode(plain, palette);
+        QCOMPARE(plain.toPlainText(), original);
+    }
+    void plainLineBreaks() {
+        Deck deck;
+        auto render = [&](const QString &source) {
+            QImage image(960, 540, QImage::Format_ARGB32_Premultiplied);
+            QPainter painter(&image);
+            paintSlide(&painter, image.rect(), source, "/tmp", deck.palette());
+            return image;
+        };
+        QString cities = "San Clarita\nChicago\nVirginia\nCopenhagen\nAmsterdam\nSingapore\nSydney";
+        QString explicitBreaks = cities;
+        explicitBreaks.replace("\n", "\\\n");
+        QCOMPARE(render(cities), render(explicitBreaks));
+        QString crlf = cities;
+        crlf.replace("\n", "\r\n");
+        QCOMPARE(render(crlf), render(explicitBreaks));
+        QString cr = cities;
+        cr.replace("\n", "\r");
+        QCOMPARE(render(cr), render(explicitBreaks));
+        QCOMPARE(render("`one`\n`two`"), render("`one`\\\n`two`"));
     }
     void renderAndPdf() {
         QTemporaryDir tmp;
