@@ -13,7 +13,8 @@ Media parseMedia(const QString &source, const QString &base);
 QString ensurePoster(const QString &video, const QString &base);
 QStringList slideProblems(const QString &source, const QString &base);
 void paintSlide(QPainter *painter, const QRectF &target, const QString &source, const QString &base,
-                const QVariantMap &palette, QString *warning = nullptr, bool overlayOnly = false);
+                const QVariantMap &palette, QString *warning = nullptr, bool overlayOnly = false,
+                bool backgroundOnly = false);
 class SlideItem : public QQuickPaintedItem {
     Q_OBJECT
     Q_PROPERTY(Deck *deck READ deck WRITE setDeck NOTIFY deckChanged)

@@ -423,8 +423,13 @@ QVariantMap Deck::media() const {
     m_mediaBase = base;
     auto m = parseMedia(source, base);
     const bool title = !m.text.trimmed().isEmpty();
+    QImageReader reader(m.path);
+    const bool animated =
+        !m.path.isEmpty() && !m.video && reader.supportsAnimation() && reader.imageCount() > 1;
     m_mediaCache = {{"url", QUrl::fromLocalFile(m.path)},
                     {"video", m.video},
+                    {"animated", animated},
+                    {"side", m.side},
                     {"span", m.span},
                     {"loop", m.loop},
                     {"muted", m.muted},

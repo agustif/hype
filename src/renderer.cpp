@@ -319,7 +319,8 @@ static void textDocument(QTextDocument &doc, const QString &markdown, const QVar
     doc.setTextWidth(width);
 }
 void paintSlide(QPainter *p, const QRectF &target, const QString &source, const QString &base,
-                const QVariantMap &inputPalette, QString *warning, bool overlayOnly) {
+                const QVariantMap &inputPalette, QString *warning, bool overlayOnly,
+                bool backgroundOnly) {
     p->save();
     p->setRenderHints(QPainter::Antialiasing | QPainter::TextAntialiasing |
                       QPainter::SmoothPixmapTransform);
@@ -342,7 +343,7 @@ void paintSlide(QPainter *p, const QRectF &target, const QString &source, const 
             media.video ? (media.poster.isEmpty() ? ensurePoster(media.path, base) : media.poster)
                         : media.path;
         QImage image = loadedImage(path);
-        if (!overlayOnly && !media.video && !media.span && media.background != "theme" &&
+        if (!media.video && !media.span && media.background != "theme" &&
             (bg.isEmpty() || !media.background.isEmpty())) {
             QColor color(media.background);
             if ((media.background.isEmpty() || media.background == "auto") && !image.isNull()) {
@@ -374,7 +375,8 @@ void paintSlide(QPainter *p, const QRectF &target, const QString &source, const 
                 }
             }
             if (color.isValid()) {
-                p->fillRect(QRectF(0, 0, 1920, 1080), color);
+                if (!overlayOnly)
+                    p->fillRect(QRectF(0, 0, 1920, 1080), color);
                 if (fg.isEmpty()) {
                     QString ink = (color.redF() * 0.2126 + color.greenF() * 0.7152 +
                                    color.blueF() * 0.0722) > .55
@@ -393,7 +395,7 @@ void paintSlide(QPainter *p, const QRectF &target, const QString &source, const 
             rect = QRectF(media.side == "left" ? 60 : 980, 60, 880, 960);
             area = QRectF(media.side == "left" ? 1040 : 100, 90, 780, 900);
         }
-        if (!overlayOnly && !image.isNull()) {
+        if (!overlayOnly && !backgroundOnly && !image.isNull()) {
             QSizeF scaled = image.size();
             scaled.scale(rect.size(),
                          media.span ? Qt::KeepAspectRatioByExpanding : Qt::KeepAspectRatio);
@@ -404,17 +406,22 @@ void paintSlide(QPainter *p, const QRectF &target, const QString &source, const 
             p->setClipRect(rect);
             p->drawImage(dest, image);
             p->restore();
-        } else if (!overlayOnly) {
+        } else if (!overlayOnly && !backgroundOnly) {
             p->setPen(QColor(palette["accent"].toString()));
             p->setFont(QFont("sans", 24));
             p->drawText(rect, Qt::AlignCenter, "Missing media\n" + media.file);
         }
         if (media.span) {
-            p->fillRect(QRectF(0, 0, 1920, 1080), QColor(0, 0, 0, qRound(media.overlay * 255)));
+            if (!backgroundOnly)
+                p->fillRect(QRectF(0, 0, 1920, 1080), QColor(0, 0, 0, qRound(media.overlay * 255)));
             if (fg.isEmpty() && !text.isEmpty())
                 palette["foreground"] = "#ffffff";
         } else if (!text.isEmpty() && media.side.isEmpty())
             area = QRectF(130, 40, 1660, 205);
+    }
+    if (backgroundOnly) {
+        p->restore();
+        return;
     }
     if (!text.isEmpty()) {
         bool code = text.contains(
@@ -504,7 +511,8 @@ QImage Thumbnails::requestImage(const QString &id, QSize *size, const QSize &req
     QImage image(dimensions, QImage::Format_ARGB32_Premultiplied);
     image.fill(Qt::transparent);
     QPainter p(&image);
-    paintSlide(&p, image.rect(), source, base, palette, nullptr, id.endsWith("/overlay"));
+    paintSlide(&p, image.rect(), source, base, palette, nullptr, id.endsWith("/overlay"),
+               id.endsWith("/background"));
     p.end();
     renders.insert(key, new QImage(image), qMax(1, int(image.sizeInBytes() / 1024)));
     if (size)

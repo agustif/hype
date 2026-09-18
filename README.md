@@ -109,6 +109,8 @@ Use the buttons below the preview or put layout options inside the brackets:
 
 For images that leave space around them, Hype matches the background to the image’s edge color when possible. Choose **Background → Use theme color** to override it, or specify a color: `![fit background=#ffffff](diagram.png)`.
 
+Animated WebP and GIF images play inline in the preview and while presenting. Use the usual image syntax, such as `![](demo.webp)`, with the file in `images/`. Space pauses or resumes animations while presenting; PDF and PowerPoint exports capture their first frame.
+
 Each slide supports one image or video. Copy the whole presentation folder when sharing or moving it.
 
 ## Choose your look

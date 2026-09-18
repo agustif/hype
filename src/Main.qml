@@ -245,7 +245,7 @@ ApplicationWindow {
     Shortcut { sequence: "PgUp"; enabled: !pasteDialog.visible && (win.presenting || (!slideEditor.activeFocus && !sourceEditor.activeFocus)); onActivated: deck.select(deck.selected - 5) }
     Shortcut { sequence: "Home"; enabled: !pasteDialog.visible && (win.presenting || (!win.markdown && !slideEditor.activeFocus)); onActivated: deck.select(0) }
     Shortcut { sequence: "End"; enabled: !pasteDialog.visible && (win.presenting || (!win.markdown && !slideEditor.activeFocus)); onActivated: deck.select(deck.count - 1) }
-    Shortcut { sequence: "Space"; enabled: !pasteDialog.visible && (win.presenting && deck.media.video); onActivated: player.playbackState === MediaPlayer.PlayingState ? player.pause() : player.play() }
+    Shortcut { sequence: "Space"; enabled: !pasteDialog.visible && win.presenting && (deck.media.video || animation.active); onActivated: { if (animation.item) animation.item.paused = !animation.item.paused; else player.playbackState === MediaPlayer.PlayingState ? player.pause() : player.play() } }
     Shortcut { sequence: "Ctrl+V"; enabled: !pasteDialog.visible && (!slideEditor.activeFocus && !sourceEditor.activeFocus); onActivated: deck.pasteMedia() }
     header: ToolBar {
         visible: !win.presenting; height: visible ? 60 : 0
@@ -489,7 +489,29 @@ ApplicationWindow {
                 property real slideWidth: Math.min(width-margin*2,(height-margin*2)*16/9)
                 Item {
                     id: slideFrame; objectName: "slideFrame"; width: stage.slideWidth; height: width*9/16; anchors.centerIn: parent
-                    Image { anchors.fill: parent; source: "image://slides/" + (deck.revision, deck.renderId(deck.selected)); asynchronous: true; retainWhileLoading: true; cache: true; sourceSize: Qt.size(1920, 1080) }
+                    Image { anchors.fill: parent; source: "image://slides/" + (deck.revision, deck.renderId(deck.selected)) + (animation.active ? "/background" : ""); asynchronous: true; retainWhileLoading: true; cache: true; sourceSize: Qt.size(1920, 1080) }
+                    Loader {
+                        id: animation; objectName: "animationLoader"
+                        active: workspace.visible && !!deck.media.animated
+                        x: (deck.media.side ? (deck.media.side === "left" ? 60 : 980) : deck.media.span ? 0 : deck.media.title ? 100 : 70)*slideFrame.width/1920
+                        y: (deck.media.side ? 60 : deck.media.span ? 0 : deck.media.title ? 280 : 50)*slideFrame.height/1080
+                        width: (deck.media.side ? 880 : deck.media.span ? 1920 : deck.media.title ? 1720 : 1780)*slideFrame.width/1920
+                        height: (deck.media.side ? 960 : deck.media.span ? 1080 : deck.media.title ? 730 : 980)*slideFrame.height/1080
+                        sourceComponent: AnimatedImage {
+                            objectName: "animatedMedia"
+                            source: deck.media.url
+                            asynchronous: true
+                            cache: false // Decode the current frame without retaining an entire animation.
+                            playing: true
+                            property bool autoplay: deck.media.autoplay
+                            paused: !autoplay
+                            onAutoplayChanged: paused = !autoplay
+                            fillMode: deck.media.span ? Image.PreserveAspectCrop : Image.PreserveAspectFit
+                            clip: true
+                            onSourceChanged: paused = !autoplay
+                            onStatusChanged: if (status === Image.Ready) paused = !autoplay
+                        }
+                    }
                     VideoOutput {
                         id: video; visible: deck.media.video && (player.playbackState !== MediaPlayer.StoppedState)
                         x: deck.media.span ? 0 : (deck.media.title ? 100 : 70)*slideFrame.width/1920
@@ -498,7 +520,7 @@ ApplicationWindow {
                         height: deck.media.span ? slideFrame.height : (deck.media.title ? 730 : 980)*slideFrame.height/1080
                         fillMode: deck.media.span ? VideoOutput.PreserveAspectCrop : VideoOutput.PreserveAspectFit
                     }
-                    Image { anchors.fill: parent; source: visible ? "image://slides/" + (deck.revision, deck.renderId(deck.selected)) + "/overlay" : ""; asynchronous: true; retainWhileLoading: true; sourceSize: Qt.size(1920,1080); visible: video.visible && win.document.media.span }
+                    Image { anchors.fill: parent; source: visible ? "image://slides/" + (deck.revision, deck.renderId(deck.selected)) + "/overlay" : ""; asynchronous: true; retainWhileLoading: true; sourceSize: Qt.size(1920,1080); visible: animation.active || (video.visible && win.document.media.span) }
                     Button { visible: deck.media.video && !win.presenting; anchors.centerIn: parent; text: player.playbackState === MediaPlayer.PlayingState ? "Pause" : "▶ Play"; onClicked: player.playbackState === MediaPlayer.PlayingState ? player.pause() : player.play() }
                 }
                 DropArea { anchors.fill: parent; onDropped: function(drop) { if(drop.hasUrls) for(let url of drop.urls) deck.importMedia(url) } }

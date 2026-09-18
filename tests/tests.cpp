@@ -399,6 +399,68 @@ class HypeTests : public QObject {
                  examples + replacement + "\nCaption");
         QCOMPARE(withMedia(examples, replacement), examples + "\n" + replacement + "\n");
     }
+    void animatedImages() {
+        if (!qEnvironmentVariableIsSet("HYPE_GUI_TESTS"))
+            QSKIP("Set HYPE_GUI_TESTS=1 with local multimedia access");
+        QTemporaryDir files;
+        QVERIFY(QDir().mkpath(files.path() + "/images"));
+        QVERIFY(QFile::copy(QFINDTESTDATA("fixtures/animated.webp"),
+                            files.path() + "/images/demo.webp"));
+        QImage still(64, 48, QImage::Format_RGB32);
+        still.fill(Qt::green);
+        QVERIFY(still.save(files.path() + "/images/still.webp"));
+        write(files.path() + "/talk.md",
+              "![fit background=#123456](demo.webp)\n\n---\n\n![](still.webp)\n");
+        Deck d;
+        QVERIFY(d.loadPath(files.path() + "/talk.md"));
+        QVERIFY(d.media()["animated"].toBool());
+        // Animation's transparent frames must reveal the background, not its first frame.
+        Thumbnails provider(&d);
+        const QImage background =
+            provider.requestImage(d.renderId(0) + "/background", nullptr, QSize(192, 108));
+        QCOMPARE(background.pixelColor(96, 54), QColor("#123456"));
+        const QImage thumbnail = provider.requestImage(d.renderId(0), nullptr, QSize(192, 108));
+        QCOMPARE(thumbnail.pixelColor(96, 54), QColor(Qt::red));
+        QQuickStyle::setStyle("Basic");
+        qmlRegisterType<SlideItem>("Hype", 1, 0, "SlideCanvas");
+        QQmlApplicationEngine engine;
+        engine.rootContext()->setContextProperty("deck", &d);
+        engine.addImageProvider("slides", new Thumbnails(&d));
+        engine.load(QUrl("qrc:/Main.qml"));
+        QVERIFY(!engine.rootObjects().isEmpty());
+        auto window = qobject_cast<QQuickWindow *>(engine.rootObjects()[0]);
+        auto loader = window->findChild<QObject *>("animationLoader");
+        QVERIFY(loader);
+        QTRY_VERIFY(loader->property("item").value<QObject *>());
+        auto animation = loader->property("item").value<QObject *>();
+        QTRY_COMPARE(animation->property("frameCount").toInt(), 3);
+        const int frame = animation->property("currentFrame").toInt();
+        QTRY_VERIFY(animation->property("currentFrame").toInt() != frame);
+        animation->setProperty("paused", true);
+        const int paused = animation->property("currentFrame").toInt();
+        QTest::qWait(450);
+        QCOMPARE(animation->property("currentFrame").toInt(), paused);
+        window->setProperty("markdown", true);
+        QTRY_VERIFY(!loader->property("active").toBool());
+        QTRY_VERIFY(!loader->property("item").value<QObject *>());
+        window->setProperty("markdown", false);
+        QTRY_VERIFY(loader->property("item").value<QObject *>());
+        d.select(1);
+        QVERIFY(!d.media()["animated"].toBool());
+        QTRY_VERIFY(!loader->property("active").toBool());
+        QTRY_VERIFY(!loader->property("item").value<QObject *>());
+        d.select(0);
+        d.editSlide("![right autoplay=false](demo.webp)\n\n# Caption");
+        QTRY_VERIFY(loader->property("item").value<QObject *>());
+        animation = loader->property("item").value<QObject *>();
+        QTRY_VERIFY(animation->property("paused").toBool());
+        QCOMPARE(d.media()["side"].toString(), QString("right"));
+        window->setProperty("presenting", true);
+        QTest::keyClick(window, Qt::Key_Space);
+        QTRY_VERIFY(!animation->property("paused").toBool());
+        QTest::keyClick(window, Qt::Key_Space);
+        QTRY_VERIFY(animation->property("paused").toBool());
+    }
     void visualOperations() {
         if (!qEnvironmentVariableIsSet("HYPE_GUI_TESTS"))
             QSKIP("Set HYPE_GUI_TESTS=1 with local multimedia access");
