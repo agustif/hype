@@ -18,11 +18,13 @@ Then open **Hype** from the app launcher, or run `hype` in a terminal.
 
 Open Hype from your app launcher. It reopens your last presentation; use **Ctrl+N** to start a new one, or **Ctrl+O** to choose a Markdown file.
 
-In **Visual** mode, select a slide in the sidebar and write its Markdown below the preview. Changes appear as you type. Drag the divider to give the preview or editor more room. The mode button shows a slide or code icon; click it or press **Ctrl+E** to switch between **Visual** and **Markdown**. Markdown mode edits the whole presentation.
+In **Visual** mode, select a slide in the sidebar and write its Markdown below the preview. Changes appear as you type. Drag the divider to give the preview or editor more room. The mode button shows the current mode as a grid, slide, or `#` icon; click it or press **Ctrl+M** to step through **Overview**, **Visual**, and **Markdown**, and **Ctrl+Shift+M** to step back. Markdown mode edits the whole presentation, with the same formatting bar on top.
 
-The icons above the slide editor apply bold, italic, headlines, code blocks, and hidden comments to your selection. The image icon adds media; the sliders icon opens its layout and background options.
+**Overview** mode fills the window with a grid of every slide. Select, rearrange, duplicate, and delete slides there as you would in the sidebar; the up and down arrows move by a row. Double-click a slide or press **Enter** to open it in Visual mode.
 
-Use **Ctrl+Enter** or right-click a slide to add a slide after the selection. Drag slides to rearrange them—their Markdown moves with them. Hold a dragged slide near the sidebar’s top or bottom to scroll further. Select several slides with **Shift+click** or **Shift+arrows** to move, duplicate, or delete them together.
+The buttons above the editor apply bold, italic, headlines, code blocks, and hidden comments to your selection. **Media** adds an image or video; **Layout** opens its layout and background options.
+
+Use **Ctrl+Enter** or right-click a slide to add a slide after the selection. Drag slides to rearrange them—their Markdown moves with them. Hold a dragged slide near the top or bottom of the sidebar or overview to scroll further. Select several slides with **Shift+click** or **Shift+arrows** to move, duplicate, or delete them together.
 
 Hype saves automatically after a one-second typing pause, or every five seconds while you keep typing. Use **Ctrl+S** to choose a file for a new presentation or save immediately. Hype remembers the last directory you opened or saved to.
 
@@ -159,13 +161,14 @@ Slide navigation and selection shortcuts apply when the sidebar or preview has f
 | --- | --- |
 | Ctrl+N / Ctrl+O | New presentation / open file |
 | Ctrl+S / Ctrl+Shift+S | Save / save as |
-| Ctrl+E | Switch Visual / Markdown |
+| Ctrl+M / Ctrl+Shift+M | Next / previous mode: Overview, Visual, Markdown |
 | Tab / Shift+Tab | Switch between sidebar and Markdown input |
-| Arrow keys | Previous / next slide |
+| Arrow keys | Previous / next slide; up and down move by a row in Overview |
+| Enter | Open the selected slide from Overview |
 | Page Up / Page Down | Jump five slides |
 | Home / End | First / last slide |
-| Ctrl+Up or Ctrl+Left | Move selected slides earlier |
-| Ctrl+Down or Ctrl+Right | Move selected slides later |
+| Ctrl+Up or Ctrl+Left | Move selected slides earlier (Ctrl+Up by a row in Overview) |
+| Ctrl+Down or Ctrl+Right | Move selected slides later (Ctrl+Down by a row in Overview) |
 | Shift+arrows / Shift+click | Extend the slide selection |
 | Ctrl+Enter | Add a slide |
 | Ctrl+D | Duplicate selected slides |

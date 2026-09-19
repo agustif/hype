@@ -29,6 +29,7 @@ int main(int argc, char **argv) {
     args.addOption({"save", "Save changes (for theme snapshots)"});
     args.addOption({"slide", "Select a slide (1-based)", "number"});
     args.addOption({"markdown", "Start in full-document Markdown mode"});
+    args.addOption({"overview", "Start in slide overview mode"});
     args.addOption({"screenshot", "Save editor screenshot and exit", "file"});
     QCommandLineOption snapshotOption("export-snapshot", "Internal export snapshot", "file");
     snapshotOption.setFlags(QCommandLineOption::HiddenFromHelp);
@@ -108,6 +109,8 @@ int main(int argc, char **argv) {
         return 1;
     if (args.isSet("markdown"))
         QMetaObject::invokeMethod(engine.rootObjects().first(), "openMarkdown");
+    if (args.isSet("overview"))
+        QMetaObject::invokeMethod(engine.rootObjects().first(), "setMode", Q_ARG(QVariant, "overview"));
     if (args.isSet("screenshot")) {
         QTimer::singleShot(1800, &app, [&] {
             auto window = qobject_cast<QQuickWindow *>(engine.rootObjects().first());

@@ -20,6 +20,9 @@ ApplicationWindow {
     palette.highlight: win.ui.selection; palette.highlightedText: win.ui.selectionText
     palette.mid: win.ui.hover; palette.light: win.ui.border; palette.dark: win.ui.button
     property bool markdown: false
+    property bool overview: false
+    readonly property string mode: overview ? "overview" : markdown ? "markdown" : "visual"
+    readonly property int rowStep: overview ? overviewGrid.columns : 1
     readonly property int inset: 20
     property string flash: ""
     property bool flashFailed: false
@@ -44,7 +47,7 @@ ApplicationWindow {
     property bool presenting: false
     readonly property bool popupOpen: pasteDialog.visible || compressionDialog.visible ||
         historyDialog.visible || closeDialog.visible || themes.popup.visible || fonts.popup.visible ||
-        slideMenu.visible || mediaMenu.visible || exportMenu.visible
+        slideMenu.visible || slideBar.menuOpen || sourceBar.menuOpen || exportMenu.visible
     property var compressionReturnFocus: null
     property bool allowClose: false
     property int lastSelected: -1
@@ -119,24 +122,50 @@ ApplicationWindow {
         if (page) flick.contentY = Math.max(0, Math.min(Math.max(0, flick.contentHeight - flick.height + flick.bottomMargin), scroll))
     }
     function formatSlide(kind) {
+        if (markdown) {
+            const sourceEdit = Markdown.format(sourceEditor.text, sourceEditor.selectionStart, sourceEditor.selectionEnd, kind)
+            sourceEditor.forceActiveFocus()
+            deck.editSource(sourceEdit.text)
+            syncEditors()
+            sourceEditor.select(sourceEdit.start, sourceEdit.end)
+            return
+        }
         const edit = Markdown.format(slideEditor.text, slideEditor.selectionStart, slideEditor.selectionEnd, kind)
         slideEditor.forceActiveFocus()
         deck.editSlide(edit.text)
         slideEditor.select(edit.start, edit.end)
     }
     function focusMarkdown() {
+        if (overview) setMode("visual")
         if (markdown) revealSource(false, sourceFlick.contentY)
         else slideEditor.forceActiveFocus()
     }
     function openMarkdown() { setMarkdownMode(true) }
-    function setMarkdownMode(value) {
-        markdown = value
-        if (markdown) alignSource()
+    function setMarkdownMode(value) { setMode(value ? "markdown" : "visual") }
+    function setMode(name) {
+        overview = name === "overview"
+        markdown = name === "markdown"
+        if (overview) {
+            overviewGrid.forceActiveFocus()
+            Qt.callLater(overviewGrid.revealSelection)
+        } else if (markdown) alignSource()
         else stage.forceActiveFocus()
+    }
+    function cycleMode(step) {
+        const modes = ["overview", "visual", "markdown"]
+        setMode(modes[(modes.indexOf(mode) + step + modes.length) % modes.length])
+    }
+    // Moves the selected slides by whole rows in the overview, one slide elsewhere.
+    function moveSlides(delta) {
+        if (Math.abs(delta) === 1) deck.moveSelection(delta)
+        else if (delta < 0 && deck.selectionFirst > 0) deck.dropSelection(Math.max(0, deck.selectionFirst + delta))
+        else if (delta > 0 && deck.selectionLast < deck.count - 1) deck.dropSelection(Math.min(deck.count, deck.selectionLast + 1 + delta))
+        if (markdown) alignSource(false)
     }
     function addSlide() {
         let previousY = sourceFlick.contentY
         deck.addSlide()
+        if (overview) return
         if (markdown) revealSource(false, previousY)
         else slideEditor.forceActiveFocus()
     }
@@ -148,7 +177,7 @@ ApplicationWindow {
         if (focus) sourceEditor.forceActiveFocus()
         Qt.callLater(function() {
             let rect = sourceEditor.positionToRectangle(deck.sourcePosition())
-            let viewportHeight = win.contentItem.height - 2 * win.inset
+            let viewportHeight = win.contentItem.height - 2 * win.inset - sourceBar.height
             let nextY = previousY
             if (atTop || rect.y < previousY + sourceEditor.topPadding)
                 nextY = rect.y - sourceEditor.topPadding
@@ -355,7 +384,9 @@ ApplicationWindow {
     Shortcut { enabled: !win.popupOpen && !deck.compressingImage; sequences: [StandardKey.Open]; onActivated: deck.openDialog() }
     Shortcut { enabled: !win.popupOpen && !deck.compressingImage; sequences: [StandardKey.Save]; onActivated: deck.save() }
     Shortcut { enabled: !win.popupOpen && !deck.compressingImage; sequences: [StandardKey.SaveAs]; onActivated: deck.saveAs() }
-    Shortcut { sequence: "Ctrl+E"; enabled: !win.popupOpen && !deck.compressingImage && (!win.presenting); onActivated: win.setMarkdownMode(!win.markdown) }
+    Shortcut { sequence: "Ctrl+M"; enabled: !win.popupOpen && !deck.compressingImage && (!win.presenting); onActivated: win.cycleMode(1) }
+    Shortcut { sequence: "Ctrl+Shift+M"; enabled: !win.popupOpen && !deck.compressingImage && (!win.presenting); onActivated: win.cycleMode(-1) }
+    Shortcut { sequences: ["Return", "Enter"]; enabled: !win.popupOpen && !deck.compressingImage && win.overview && !win.presenting; onActivated: win.focusMarkdown() }
     Shortcut { enabled: !win.popupOpen && !deck.compressingImage; sequence: "Ctrl+N"; onActivated: deck.newDeck() }
     Shortcut { enabled: !win.popupOpen && !deck.compressingImage; sequences: ["F5", "Ctrl+Space"]; autoRepeat: false; onActivated: win.togglePresent() }
     Shortcut { sequence: "Escape"; enabled: !win.popupOpen && !deck.compressingImage && (win.presenting); onActivated: win.togglePresent() }
@@ -364,12 +395,18 @@ ApplicationWindow {
     Shortcut { sequence: "Ctrl+D"; enabled: !win.popupOpen && !deck.compressingImage && (!slideEditor.activeFocus && !sourceEditor.activeFocus); onActivated: deck.duplicateSlide() }
     Shortcut { enabled: !win.popupOpen && !deck.compressingImage; sequence: "Ctrl+Return"; onActivated: { win.addSlide() } }
     Shortcut { sequence: "Delete"; enabled: !win.popupOpen && !deck.compressingImage && (!slideEditor.activeFocus && !sourceEditor.activeFocus); onActivated: deck.deleteSlide() }
-    Shortcut { sequences: ["Right", "Down"]; enabled: !win.popupOpen && !deck.compressingImage && (win.presenting || (!slideEditor.activeFocus && !sourceEditor.activeFocus)); onActivated: deck.select(deck.selected + 1) }
-    Shortcut { sequences: ["Left", "Up"]; enabled: !win.popupOpen && !deck.compressingImage && (win.presenting || (!slideEditor.activeFocus && !sourceEditor.activeFocus)); onActivated: deck.select(deck.selected - 1) }
-    Shortcut { sequences: ["Ctrl+Up", "Ctrl+Left"]; enabled: !win.popupOpen && !deck.compressingImage && !win.presenting && !slideEditor.activeFocus && !sourceEditor.activeFocus; onActivated: { deck.moveSelection(-1); if (win.markdown) win.alignSource(false) } }
-    Shortcut { sequences: ["Ctrl+Down", "Ctrl+Right"]; enabled: !win.popupOpen && !deck.compressingImage && !win.presenting && !slideEditor.activeFocus && !sourceEditor.activeFocus; onActivated: { deck.moveSelection(1); if (win.markdown) win.alignSource(false) } }
-    Shortcut { sequences: ["Shift+Up", "Shift+Left"]; enabled: !win.popupOpen && !deck.compressingImage && !win.presenting && !slideEditor.activeFocus && !sourceEditor.activeFocus; onActivated: { deck.extendSelection(deck.selected - 1); if (win.markdown) win.alignSource(false) } }
-    Shortcut { sequences: ["Shift+Down", "Shift+Right"]; enabled: !win.popupOpen && !deck.compressingImage && !win.presenting && !slideEditor.activeFocus && !sourceEditor.activeFocus; onActivated: { deck.extendSelection(deck.selected + 1); if (win.markdown) win.alignSource(false) } }
+    Shortcut { sequence: "Right"; enabled: !win.popupOpen && !deck.compressingImage && (win.presenting || (!slideEditor.activeFocus && !sourceEditor.activeFocus)); onActivated: deck.select(deck.selected + 1) }
+    Shortcut { sequence: "Ctrl+Right"; enabled: !win.popupOpen && !deck.compressingImage && !win.presenting && !slideEditor.activeFocus && !sourceEditor.activeFocus; onActivated: win.moveSlides(1) }
+    Shortcut { sequence: "Shift+Right"; enabled: !win.popupOpen && !deck.compressingImage && !win.presenting && !slideEditor.activeFocus && !sourceEditor.activeFocus; onActivated: { deck.extendSelection(deck.selected + 1); if (win.markdown) win.alignSource(false) } }
+    Shortcut { sequence: "Down"; enabled: !win.popupOpen && !deck.compressingImage && (win.presenting || (!slideEditor.activeFocus && !sourceEditor.activeFocus)); onActivated: deck.select(deck.selected + (win.presenting ? 1 : win.rowStep)) }
+    Shortcut { sequence: "Ctrl+Down"; enabled: !win.popupOpen && !deck.compressingImage && !win.presenting && !slideEditor.activeFocus && !sourceEditor.activeFocus; onActivated: win.moveSlides(win.rowStep) }
+    Shortcut { sequence: "Shift+Down"; enabled: !win.popupOpen && !deck.compressingImage && !win.presenting && !slideEditor.activeFocus && !sourceEditor.activeFocus; onActivated: { deck.extendSelection(deck.selected + win.rowStep); if (win.markdown) win.alignSource(false) } }
+    Shortcut { sequence: "Left"; enabled: !win.popupOpen && !deck.compressingImage && (win.presenting || (!slideEditor.activeFocus && !sourceEditor.activeFocus)); onActivated: deck.select(deck.selected + -1) }
+    Shortcut { sequence: "Ctrl+Left"; enabled: !win.popupOpen && !deck.compressingImage && !win.presenting && !slideEditor.activeFocus && !sourceEditor.activeFocus; onActivated: win.moveSlides(-1) }
+    Shortcut { sequence: "Shift+Left"; enabled: !win.popupOpen && !deck.compressingImage && !win.presenting && !slideEditor.activeFocus && !sourceEditor.activeFocus; onActivated: { deck.extendSelection(deck.selected + -1); if (win.markdown) win.alignSource(false) } }
+    Shortcut { sequence: "Up"; enabled: !win.popupOpen && !deck.compressingImage && (win.presenting || (!slideEditor.activeFocus && !sourceEditor.activeFocus)); onActivated: deck.select(deck.selected + (win.presenting ? -1 : -win.rowStep)) }
+    Shortcut { sequence: "Ctrl+Up"; enabled: !win.popupOpen && !deck.compressingImage && !win.presenting && !slideEditor.activeFocus && !sourceEditor.activeFocus; onActivated: win.moveSlides(-win.rowStep) }
+    Shortcut { sequence: "Shift+Up"; enabled: !win.popupOpen && !deck.compressingImage && !win.presenting && !slideEditor.activeFocus && !sourceEditor.activeFocus; onActivated: { deck.extendSelection(deck.selected + -win.rowStep); if (win.markdown) win.alignSource(false) } }
     Shortcut { sequence: "PgDown"; enabled: !win.popupOpen && !deck.compressingImage && (win.presenting || (!slideEditor.activeFocus && !sourceEditor.activeFocus)); onActivated: deck.select(deck.selected + 5) }
     Shortcut { sequence: "PgUp"; enabled: !win.popupOpen && !deck.compressingImage && (win.presenting || (!slideEditor.activeFocus && !sourceEditor.activeFocus)); onActivated: deck.select(deck.selected - 5) }
     Shortcut { sequence: "Home"; enabled: !win.popupOpen && !deck.compressingImage && (win.presenting || (!win.markdown && !slideEditor.activeFocus)); onActivated: deck.select(0) }
@@ -405,6 +442,7 @@ ApplicationWindow {
         required property string label
         required property string description
         property bool menu: false
+        property bool compact: false
         readonly property color ink: hovered || down ? win.ui.foreground : win.ui.muted
         Layout.preferredHeight: 32
         leftPadding: 10; rightPadding: 10; topPadding: 0; bottomPadding: 0
@@ -413,11 +451,50 @@ ApplicationWindow {
         ToolTip.visible: hovered; ToolTip.text: description
         contentItem: Row {
             spacing: 7; opacity: editorButton.enabled ? 1 : 0.4
-            AppIcon { visible: !editorButton.menu || editorBar.compact; anchors.verticalCenter: parent.verticalCenter; width: 16; height: 16; name: editorButton.iconName; color: editorButton.ink }
-            Label { visible: !editorBar.compact; anchors.verticalCenter: parent.verticalCenter; text: editorButton.label; font.pixelSize: 13; color: editorButton.ink }
+            AppIcon { visible: !editorButton.menu || editorButton.compact; anchors.verticalCenter: parent.verticalCenter; width: 16; height: 16; name: editorButton.iconName; color: editorButton.ink }
+            Label { visible: !editorButton.compact; anchors.verticalCenter: parent.verticalCenter; text: editorButton.label; font.pixelSize: 13; color: editorButton.ink }
             AppIcon { visible: editorButton.menu; anchors.verticalCenter: parent.verticalCenter; width: 11; height: 11; name: "chevron-down"; color: editorButton.ink }
         }
         background: Rectangle { color: editorButton.hovered || editorButton.down ? win.ui.hover : "transparent"; radius: 3 }
+    }
+    component EditorToolbar: ToolBar {
+        id: editorBar
+        property string scope: ""
+        property real textInset: 24
+        readonly property bool compact: width < 600
+        readonly property bool menuOpen: mediaMenu.visible
+        Layout.preferredHeight: 48
+        background: Rectangle {
+            color: win.ui.background
+            Rectangle { anchors.bottom: parent.bottom; width: parent.width; height: 1; color: win.ui.border; opacity: 0.55 }
+        }
+        RowLayout {
+            anchors.fill: parent; anchors.leftMargin: editorBar.textInset - 10; anchors.rightMargin: 14; spacing: 2
+            EditorButton { compact: editorBar.compact; objectName: editorBar.scope + "boldButton"; iconName: "bold"; label: "Bold"; description: "Bold"; onClicked: win.formatSlide("bold") }
+            EditorButton { compact: editorBar.compact; objectName: editorBar.scope + "italicButton"; iconName: "italic"; label: "Italic"; description: "Italic"; onClicked: win.formatSlide("italic") }
+            EditorButton { compact: editorBar.compact; objectName: editorBar.scope + "headlineButton"; iconName: "headline"; label: "Headline"; description: "Headline"; onClicked: win.formatSlide("headline") }
+            EditorButton { compact: editorBar.compact; objectName: editorBar.scope + "codeButton"; iconName: "code"; label: "Code"; description: "Code block"; onClicked: win.formatSlide("code") }
+            EditorButton { compact: editorBar.compact; objectName: editorBar.scope + "commentButton"; iconName: "comment"; label: "Note"; description: "Comment (hidden on slide)"; onClicked: win.formatSlide("comment") }
+            Item { Layout.fillWidth: true }
+            EditorButton { compact: editorBar.compact; iconName: "media-add"; label: "Media"; description: "Add image / video"; onClicked: deck.importDialog() }
+            EditorButton {
+                compact: editorBar.compact
+                objectName: editorBar.scope + "mediaOptionsButton"; iconName: "adjust"; label: "Layout"; description: "Image / video options"; menu: true
+                enabled: !!deck.media.url.toString()
+                onClicked: mediaMenu.open()
+                Menu {
+                    id: mediaMenu; objectName: editorBar.scope + "mediaMenu"; y: parent.height + 4
+                    MenuItem { text: "Fit"; checkable: true; checked: !deck.media.span && !deck.media.side; onTriggered: deck.setMediaMode("fit") }
+                    MenuItem { text: "Span"; checkable: true; checked: deck.media.span; onTriggered: deck.setMediaMode("span") }
+                    MenuItem { text: "Left"; enabled: !deck.media.video; checkable: true; checked: deck.media.side === "left"; onTriggered: deck.setMediaMode("left") }
+                    MenuItem { text: "Right"; enabled: !deck.media.video; checkable: true; checked: deck.media.side === "right"; onTriggered: deck.setMediaMode("right") }
+                    MenuSeparator {}
+                    MenuItem { text: "Match image edges"; checkable: true; checked: deck.media.background === "auto"; onTriggered: deck.matchImageBackground(true) }
+                    MenuItem { text: deck.media.video ? "Blurred first frame" : "Blurred image"; checkable: true; checked: deck.media.background === "blur"; onTriggered: deck.setMediaBackground("blur") }
+                    MenuItem { text: "Use theme color"; checkable: true; checked: deck.media.background === "theme"; onTriggered: deck.matchImageBackground(false) }
+                }
+            }
+        }
     }
     header: ToolBar {
         id: topBar
@@ -553,9 +630,9 @@ ApplicationWindow {
             }
             ToolbarIconButton {
                 objectName: "modeButton"
-                iconName: win.markdown ? "markdown" : "visual"
-                description: (win.markdown ? "Markdown mode · Switch to Visual" : "Visual mode · Switch to Markdown") + " (Ctrl+E)"
-                onClicked: win.setMarkdownMode(!win.markdown)
+                iconName: win.mode
+                description: (win.overview ? "Overview mode · Switch to Visual" : win.markdown ? "Markdown mode · Switch to Overview" : "Visual mode · Switch to Markdown") + " (Ctrl+M)"
+                onClicked: win.cycleMode(1)
             }
             ToolbarIconButton {
                 objectName: "historyButton"; iconName: "history"; description: "History · Restore an earlier version"
@@ -587,10 +664,149 @@ ApplicationWindow {
             }
         }
     }
+    // Shared by the sidebar and the overview, so it cannot live inside either.
+    Menu { id: slideMenu
+        MenuItem { text: "New slide after this"; onTriggered: { win.addSlide() } }
+        MenuItem { text: deck.selectionCount > 1 ? "Duplicate slides" : "Duplicate slide"; onTriggered: deck.duplicateSlide() }
+        MenuItem { text: deck.selectionCount > 1 ? "Delete slides" : "Delete slide"; onTriggered: deck.deleteSlide() }
+    }
     RowLayout {
         anchors.fill: parent; spacing: 0
+        GridView {
+            id: overviewGrid; objectName: "overviewGrid"
+            visible: win.overview && !win.presenting
+            Layout.fillWidth: true; Layout.fillHeight: true; clip: true
+            // Cells carry their gap on the right, so the grid runs to the window edge.
+            Layout.margins: win.inset; Layout.rightMargin: 0
+            readonly property real gap: win.inset
+            readonly property int columns: Math.max(1, Math.floor(width / (260 + gap)))
+            readonly property real tileWidth: Math.floor(width / columns) - gap
+            readonly property real tileHeight: Math.round(tileWidth * 9 / 16)
+            property int hoveredSlide: -1
+            property int dropColumn: 0
+            property int dropRow: 0
+            cellWidth: tileWidth + gap; cellHeight: tileHeight + gap
+            model: deck; currentIndex: deck.selected
+            cacheBuffer: height
+            highlightFollowsCurrentItem: false
+            boundsBehavior: Flickable.StopAtBounds
+            // Rows always rest against the top padding: a half-scrolled row would show
+            // its trailing gap there and make the padding look deeper than in other modes.
+            snapMode: GridView.SnapToRow
+            bottomMargin: contentHeight > height ? height % cellHeight : 0
+            function revealSelection() {
+                forceLayout()
+                positionViewAtIndex(deck.selected, GridView.Contain)
+                contentY = originY + Math.ceil((contentY - originY) / cellHeight - 0.001) * cellHeight
+            }
+            onColumnsChanged: if (win.overview) Qt.callLater(revealSelection)
+            onHeightChanged: if (win.overview) Qt.callLater(revealSelection)
+            function updateDrop(x, y) {
+                win.dragX = x
+                win.dragY = y
+                win.dragScroll = y < 36 ? -1 : (y > height - 36 ? 1 : 0)
+                // Drop between slides, using each thumbnail's midpoint.
+                const rows = Math.ceil(deck.count / columns)
+                dropRow = Math.max(0, Math.min(rows - 1, Math.floor((y + contentY - originY) / cellHeight)))
+                const filled = Math.min(columns, deck.count - dropRow * columns)
+                dropColumn = Math.max(0, Math.min(filled, Math.floor((x + cellWidth / 2) / cellWidth)))
+                win.dropIndex = dropRow * columns + dropColumn
+            }
+            function cancelDrag() {
+                win.dragIndex = -1
+                win.dropIndex = -1
+                win.dragScroll = 0
+            }
+            Connections {
+                target: deck
+                function onSelectedChanged() { if (win.overview && win.dragIndex < 0) Qt.callLater(overviewGrid.revealSelection) }
+            }
+            delegate: Item {
+                id: tile; required property int index
+                width: overviewGrid.cellWidth; height: overviewGrid.cellHeight
+                property bool selected: index >= deck.selectionFirst && index <= deck.selectionLast
+                opacity: win.dragIndex >= 0 && selected ? 0.4 : 1
+                HoverHandler { id: tileHover; onHoveredChanged: overviewGrid.hoveredSlide = hovered ? tile.index : overviewGrid.hoveredSlide === tile.index ? -1 : overviewGrid.hoveredSlide }
+                ToolTip.visible: tileHover.hovered && win.dragIndex < 0; ToolTip.delay: 400
+                ToolTip.text: "Slide " + (index + 1)
+                Rectangle {
+                    width: overviewGrid.tileWidth; height: overviewGrid.tileHeight; color: deck.background
+                    border.width: deck.selected === tile.index ? 3 : tile.selected ? 2 : 1
+                    border.color: tile.selected ? win.ui.accent : win.ui.border; radius: 3
+                    Image { anchors.fill: parent; anchors.margins: 3; source: "image://slides/" + (deck.revision, deck.renderId(tile.index)); asynchronous: true; retainWhileLoading: true; cache: true; sourceSize.width: 640; sourceSize.height: 360; fillMode: Image.PreserveAspectCrop; clip: true }
+                }
+            }
+            Rectangle {
+                parent: overviewGrid; z: 2
+                visible: win.overview && win.dragIndex >= 0 && win.dropIndex >= 0
+                width: 3; height: overviewGrid.tileHeight; color: win.ui.accent
+                x: Math.max(0, overviewGrid.dropColumn * overviewGrid.cellWidth - overviewGrid.gap / 2 - 1)
+                y: overviewGrid.originY + overviewGrid.dropRow * overviewGrid.cellHeight - overviewGrid.contentY
+            }
+            MouseArea {
+                id: tileDrag; parent: overviewGrid; anchors.fill: parent; z: 1
+                acceptedButtons: Qt.LeftButton | Qt.RightButton
+                preventStealing: true
+                cursorShape: win.dragIndex >= 0 ? Qt.ClosedHandCursor : Qt.ArrowCursor
+                property point pressPosition
+                property int pressedIndex: -1
+                property bool moved: false
+                property bool extending: false
+                function tileAt(x, y) {
+                    // The gap beside and below a thumbnail belongs to no slide.
+                    const column = Math.floor(x / overviewGrid.cellWidth)
+                    const row = Math.floor((y + overviewGrid.contentY - overviewGrid.originY) / overviewGrid.cellHeight)
+                    if (x - column * overviewGrid.cellWidth > overviewGrid.tileWidth) return -1
+                    if (y + overviewGrid.contentY - overviewGrid.originY - row * overviewGrid.cellHeight > overviewGrid.tileHeight) return -1
+                    return overviewGrid.indexAt(x, y + overviewGrid.contentY)
+                }
+                onPressed: function(mouse) {
+                    overviewGrid.cancelFlick()
+                    pressPosition = Qt.point(mouse.x, mouse.y)
+                    pressedIndex = tileAt(mouse.x, mouse.y)
+                    moved = false
+                    overviewGrid.forceActiveFocus()
+                    if (pressedIndex < 0) return
+                    extending = !!(mouse.modifiers & Qt.ShiftModifier)
+                    if (extending) deck.extendSelection(pressedIndex)
+                    else if (pressedIndex < deck.selectionFirst || pressedIndex > deck.selectionLast) deck.select(pressedIndex)
+                    if (mouse.button === Qt.RightButton) slideMenu.popup()
+                }
+                onPositionChanged: function(mouse) {
+                    if (!(pressedButtons & Qt.LeftButton) || pressedIndex < 0) return
+                    if (win.dragIndex < 0 && Math.hypot(mouse.x - pressPosition.x, mouse.y - pressPosition.y) > 8) {
+                        win.dragIndex = pressedIndex
+                        moved = true
+                    }
+                    if (win.dragIndex >= 0) overviewGrid.updateDrop(mouse.x, mouse.y)
+                }
+                onReleased: function(mouse) {
+                    if (win.dragIndex >= 0) {
+                        overviewGrid.updateDrop(mouse.x, mouse.y)
+                        let slot = win.dropIndex
+                        overviewGrid.cancelDrag()
+                        if (slot >= 0) deck.dropSelection(slot)
+                        overviewGrid.revealSelection()
+                    }
+                    if (!moved && !extending && mouse.button === Qt.LeftButton && pressedIndex >= 0) deck.select(pressedIndex)
+                    pressedIndex = -1
+                }
+                onCanceled: { overviewGrid.cancelDrag(); pressedIndex = -1 }
+                onDoubleClicked: if (!moved && tileAt(mouseX, mouseY) >= 0) win.focusMarkdown()
+                onWheel: function(wheel) { wheel.accepted = false }
+            }
+            Timer {
+                interval: 40; repeat: true; running: win.overview && win.dragIndex >= 0 && win.dragScroll !== 0
+                onTriggered: {
+                    overviewGrid.contentY = Math.max(overviewGrid.originY, Math.min(
+                        overviewGrid.originY + Math.max(0, overviewGrid.contentHeight - overviewGrid.height),
+                        overviewGrid.contentY + win.dragScroll * 18))
+                    overviewGrid.updateDrop(win.dragX, win.dragY)
+                }
+            }
+        }
         Rectangle {
-            visible: !win.presenting; Layout.preferredWidth: 227; Layout.fillHeight: true; color: win.ui.panel
+            visible: !win.presenting && !win.overview; Layout.preferredWidth: 227; Layout.fillHeight: true; color: win.ui.panel
             ColumnLayout {
                 anchors.fill: parent; anchors.margins: win.inset; spacing: 10
                 ListView {
@@ -679,7 +895,7 @@ ApplicationWindow {
                     }
                     Rectangle {
                         parent: thumbnails; z: 2
-                        visible: win.dragIndex >= 0 && win.dropIndex >= 0
+                        visible: !win.overview && win.dragIndex >= 0 && win.dropIndex >= 0
                         width: thumbnails.width; height: 3
                         y: Math.max(0, Math.min(thumbnails.height - height,
                             thumbnails.originY + win.dropIndex * thumbnails.slideStep - thumbnails.contentY - thumbnails.spacing / 2))
@@ -731,7 +947,7 @@ ApplicationWindow {
                         onDoubleClicked: if (!moved) win.focusMarkdown()
                     }
                     Timer {
-                        interval: 40; repeat: true; running: win.dragIndex >= 0 && win.dragScroll !== 0
+                        interval: 40; repeat: true; running: !win.overview && win.dragIndex >= 0 && win.dragScroll !== 0
                         onTriggered: {
                             thumbnails.contentY = Math.max(thumbnails.originY, Math.min(
                                 thumbnails.originY + thumbnails.contentHeight - thumbnails.height,
@@ -739,17 +955,12 @@ ApplicationWindow {
                             thumbnails.updateDrop(win.dragX, win.dragY)
                         }
                     }
-                    Menu { id: slideMenu
-                        MenuItem { text: "New slide after this"; onTriggered: { win.addSlide() } }
-                        MenuItem { text: deck.selectionCount > 1 ? "Duplicate slides" : "Duplicate slide"; onTriggered: deck.duplicateSlide() }
-                        MenuItem { text: deck.selectionCount > 1 ? "Delete slides" : "Delete slide"; onTriggered: deck.deleteSlide() }
-                    }
                 }
             }
         }
         SplitView {
             id: workspace; orientation: Qt.Vertical
-            visible: !win.markdown || win.presenting
+            visible: (!win.markdown && !win.overview) || win.presenting
             Layout.fillWidth: true; Layout.fillHeight: true
             Layout.margins: win.presenting ? 0 : win.inset; Layout.leftMargin: 0
             background: Rectangle { color: win.ui.background }
@@ -813,41 +1024,7 @@ ApplicationWindow {
                 visible: !win.presenting; spacing: 0
                 SplitView.preferredHeight: 250; SplitView.minimumHeight: 140
                 SplitView.maximumHeight: workspace.height * 0.65
-            ToolBar {
-                id: editorBar
-                readonly property bool compact: width < 600
-                Layout.fillWidth: true; Layout.preferredHeight: 48
-                background: Rectangle {
-                    color: win.ui.background
-                    Rectangle { anchors.bottom: parent.bottom; width: parent.width; height: 1; color: win.ui.border; opacity: 0.55 }
-                }
-                RowLayout {
-                    anchors.fill: parent; anchors.leftMargin: 14; anchors.rightMargin: 14; spacing: 2
-                    EditorButton { objectName: "boldButton"; iconName: "bold"; label: "Bold"; description: "Bold"; onClicked: win.formatSlide("bold") }
-                    EditorButton { objectName: "italicButton"; iconName: "italic"; label: "Italic"; description: "Italic"; onClicked: win.formatSlide("italic") }
-                    EditorButton { objectName: "headlineButton"; iconName: "headline"; label: "Headline"; description: "Headline"; onClicked: win.formatSlide("headline") }
-                    EditorButton { objectName: "codeButton"; iconName: "code"; label: "Code"; description: "Code block"; onClicked: win.formatSlide("code") }
-                    EditorButton { objectName: "commentButton"; iconName: "comment"; label: "Note"; description: "Comment (hidden on slide)"; onClicked: win.formatSlide("comment") }
-                    Item { Layout.fillWidth: true }
-                    EditorButton { iconName: "media-add"; label: "Media"; description: "Add image / video"; onClicked: deck.importDialog() }
-                    EditorButton {
-                        objectName: "mediaOptionsButton"; iconName: "adjust"; label: "Layout"; description: "Image / video options"; menu: true
-                        enabled: !!deck.media.url.toString()
-                        onClicked: mediaMenu.open()
-                        Menu {
-                            id: mediaMenu; objectName: "mediaMenu"; y: parent.height + 4
-                            MenuItem { text: "Fit"; checkable: true; checked: !deck.media.span && !deck.media.side; onTriggered: deck.setMediaMode("fit") }
-                            MenuItem { text: "Span"; checkable: true; checked: deck.media.span; onTriggered: deck.setMediaMode("span") }
-                            MenuItem { text: "Left"; enabled: !deck.media.video; checkable: true; checked: deck.media.side === "left"; onTriggered: deck.setMediaMode("left") }
-                            MenuItem { text: "Right"; enabled: !deck.media.video; checkable: true; checked: deck.media.side === "right"; onTriggered: deck.setMediaMode("right") }
-                            MenuSeparator {}
-                            MenuItem { text: "Match image edges"; checkable: true; checked: deck.media.background === "auto"; onTriggered: deck.matchImageBackground(true) }
-                            MenuItem { text: deck.media.video ? "Blurred first frame" : "Blurred image"; checkable: true; checked: deck.media.background === "blur"; onTriggered: deck.setMediaBackground("blur") }
-                            MenuItem { text: "Use theme color"; checkable: true; checked: deck.media.background === "theme"; onTriggered: deck.matchImageBackground(false) }
-                        }
-                    }
-                }
-            }
+            EditorToolbar { id: slideBar; Layout.fillWidth: true }
             ScrollView {
                 id: slideScroll; objectName: "slideScroll"
                 Layout.fillWidth: true; Layout.fillHeight: true; clip: true
@@ -873,11 +1050,14 @@ ApplicationWindow {
             }
             }
         }
+        ColumnLayout {
+            visible: win.markdown && !win.overview && !win.presenting; spacing: 0
+            Layout.fillWidth: true; Layout.fillHeight: true
+            Layout.margins: win.inset; Layout.leftMargin: 0
+        EditorToolbar { id: sourceBar; scope: "source."; textInset: sourceEditor.leftPadding; Layout.fillWidth: true }
         ScrollView {
             id: sourceScroll; objectName: "sourceScroll"
-            visible: win.markdown && !win.presenting
             Layout.fillWidth: true; Layout.fillHeight: true; clip: true
-            Layout.margins: win.inset; Layout.leftMargin: 0
             background: Rectangle { color: win.ui.background }
             Flickable {
                 id: sourceFlick; objectName: "sourceFlick"
@@ -889,6 +1069,7 @@ ApplicationWindow {
                 }
                 TextArea.flickable: TextArea {
                 id: sourceEditor; objectName: "sourceEditor"
+                persistentSelection: true
                 textFormat: TextEdit.PlainText
                 color: win.ui.foreground; selectionColor: win.ui.selection; selectedTextColor: win.ui.selectionText
                 font.family: "JetBrains Mono"; font.pixelSize: 18
@@ -898,6 +1079,7 @@ ApplicationWindow {
                 Keys.onPressed: function(event) { win.editorKey(sourceEditor, sourceFlick, event) }
             }
             }
+        }
         }
     }
     MediaPlayer { id: player; objectName: "player"; videoOutput: video; audioOutput: AudioOutput { muted: deck.media.muted } loops: deck.media.loop ? MediaPlayer.Infinite : 1; onErrorOccurred: function(error,message) { deck.setStatus(message) } }

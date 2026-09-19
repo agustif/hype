@@ -1342,6 +1342,100 @@ class HypeTests : public QObject {
         QCOMPARE(deck.count(), 5);
         QCOMPARE(deck.slide(2).trimmed(), "# Second pasted");
         QVERIFY(deck.source().endsWith(tail));
+        // The same toolbar formats the full document in Markdown mode.
+        QVERIFY(QMetaObject::invokeMethod(window, "openMarkdown"));
+        auto source = window->findChild<QQuickItem *>("sourceEditor");
+        auto sourceBold = window->findChild<QQuickItem *>("source.boldButton");
+        QVERIFY(source && sourceBold);
+        QTRY_VERIFY(sourceBold->isVisible());
+        const QString before = deck.source();
+        const int at = before.indexOf("edited");
+        QVERIFY(at >= 0);
+        QVERIFY(QMetaObject::invokeMethod(source, "select", Q_ARG(int, at), Q_ARG(int, at + 6)));
+        const QPoint sourcePoint = sourceBold->mapToScene(QPointF(sourceBold->width() / 2, sourceBold->height() / 2)).toPoint();
+        QTest::mouseClick(window, Qt::LeftButton, Qt::NoModifier, sourcePoint);
+        QString bolded = before;
+        bolded.replace(at, 6, "**edited**");
+        QCOMPARE(deck.source(), bolded);
+        QCOMPARE(source->property("text").toString(), bolded);
+        QCOMPARE(source->property("selectedText").toString(), QString("edited"));
+        QCOMPARE(deck.count(), 5);
+    }
+    void overviewMode() {
+        if (!qEnvironmentVariableIsSet("HYPE_GUI_TESTS"))
+            QSKIP("Set HYPE_GUI_TESTS=1 with local graphics access");
+        QQuickStyle::setStyle("Basic");
+        qmlRegisterType<SlideItem>("Hype", 1, 0, "SlideCanvas");
+        qmlRegisterType<AppTheme>("Hype", 1, 0, "AppTheme");
+        Deck d;
+        QStringList slides;
+        for (int i = 1; i <= 12; ++i)
+            slides << QString("# S%1\n").arg(i);
+        d.editSource(slides.join("\n---\n\n"));
+        QCOMPARE(d.count(), 12);
+        QQmlApplicationEngine engine;
+        engine.rootContext()->setContextProperty("deck", &d);
+        engine.addImageProvider("slides", new Thumbnails(&d));
+        engine.load(QUrl("qrc:/Main.qml"));
+        QVERIFY(!engine.rootObjects().isEmpty());
+        auto window = qobject_cast<QQuickWindow *>(engine.rootObjects()[0]);
+        QVERIFY(window);
+        QTest::qWait(300);
+        auto grid = window->findChild<QQuickItem *>("overviewGrid");
+        auto list = window->findChild<QQuickItem *>("thumbnails");
+        QVERIFY(grid && list);
+        // Ctrl+M walks Visual → Markdown → Overview; Ctrl+Shift+M walks back.
+        QCOMPARE(window->property("mode").toString(), QString("visual"));
+        QTest::keyClick(window, Qt::Key_M, Qt::ControlModifier | Qt::ShiftModifier);
+        QCOMPARE(window->property("mode").toString(), QString("overview"));
+        QTest::keyClick(window, Qt::Key_M, Qt::ControlModifier);
+        QCOMPARE(window->property("mode").toString(), QString("visual"));
+        QTest::keyClick(window, Qt::Key_M, Qt::ControlModifier);
+        QCOMPARE(window->property("mode").toString(), QString("markdown"));
+        QTest::keyClick(window, Qt::Key_M, Qt::ControlModifier);
+        QCOMPARE(window->property("mode").toString(), QString("overview"));
+        QTRY_VERIFY(grid->isVisible());
+        QVERIFY(!list->isVisible());
+        QVERIFY(!window->findChild<QQuickItem *>("editorPane")->isVisible());
+        QTRY_VERIFY(grid->property("columns").toInt() >= 2);
+        const int columns = grid->property("columns").toInt();
+        const double cellWidth = grid->property("cellWidth").toDouble(),
+                     cellHeight = grid->property("cellHeight").toDouble();
+        auto center = [&](int index) {
+            return grid->mapToScene(QPointF((index % columns + 0.4) * cellWidth,
+                                            (index / columns + 0.4) * cellHeight)).toPoint();
+        };
+        // Clicking selects, and the arrows move by slide and by row.
+        QTest::mouseClick(window, Qt::LeftButton, Qt::NoModifier, center(1));
+        QCOMPARE(d.selected(), 1);
+        QTest::keyClick(window, Qt::Key_Down);
+        QCOMPARE(d.selected(), 1 + columns);
+        QTest::keyClick(window, Qt::Key_Left);
+        QCOMPARE(d.selected(), columns);
+        QTest::keyClick(window, Qt::Key_Up);
+        QCOMPARE(d.selected(), 0);
+        // Ctrl+Down carries the slide a whole row.
+        QTest::keyClick(window, Qt::Key_Down, Qt::ControlModifier);
+        QCOMPARE(d.selected(), columns);
+        QVERIFY(d.slide(columns).contains("# S1\n") || d.slide(columns).trimmed() == "# S1");
+        d.undo();
+        QVERIFY(d.slide(0).contains("# S1"));
+        // Dragging a slide onto the left half of another drops it before that slide.
+        d.select(0);
+        const QPoint from = center(0), to = center(2) - QPoint(int(cellWidth * 0.3), 0);
+        QTest::mousePress(window, Qt::LeftButton, Qt::NoModifier, from);
+        for (int step = 1; step <= 20; ++step)
+            QTest::mouseMove(window, from + (to - from) * step / 20, 10);
+        QTest::mouseRelease(window, Qt::LeftButton, Qt::NoModifier, to);
+        QCOMPARE(d.selected(), 1);
+        QVERIFY(d.slide(0).contains("# S2"));
+        QVERIFY(d.slide(1).contains("# S1"));
+        QVERIFY(d.slide(2).contains("# S3"));
+        // Enter opens the selected slide in Visual mode.
+        QTest::keyClick(window, Qt::Key_Return);
+        QCOMPARE(window->property("mode").toString(), QString("visual"));
+        QTRY_VERIFY(list->isVisible());
+        QCOMPARE(d.selected(), 1);
     }
     void visualOperations() {
         if (!qEnvironmentVariableIsSet("HYPE_GUI_TESTS"))
@@ -1430,7 +1524,7 @@ class HypeTests : public QObject {
         const int pasteSlide = d.selected();
         QTest::keyClick(window, Qt::Key_PageDown);
         QCOMPARE(d.selected(), pasteSlide);
-        QTest::keyClick(window, Qt::Key_E, Qt::ControlModifier);
+        QTest::keyClick(window, Qt::Key_M, Qt::ControlModifier | Qt::ShiftModifier);
         QVERIFY(!window->property("markdown").toBool());
         if (qEnvironmentVariableIsSet("HYPE_PASTE_SCREENSHOT")) {
             QTest::qWait(100);
@@ -1467,7 +1561,7 @@ class HypeTests : public QObject {
         QVERIFY(d.source().contains("ordinary paste"));
         window->requestActivate();
         QTRY_VERIFY(window->isActive());
-        QTest::keyClick(window, Qt::Key_E, Qt::ControlModifier);
+        QTest::keyClick(window, Qt::Key_M, Qt::ControlModifier | Qt::ShiftModifier);
         QString trial = QFINDTESTDATA("../trials/rails-world-2023/presentation.md");
         if (!trial.isEmpty()) {
             QVERIFY(d.loadPath(trial));
@@ -1686,7 +1780,7 @@ class HypeTests : public QObject {
         QTest::keyClick(window, Qt::Key_PageUp);
         QCOMPARE(d.selected(), selected);
         QString beforeToggle = d.source();
-        QTest::keyClick(window, Qt::Key_E, Qt::ControlModifier);
+        QTest::keyClick(window, Qt::Key_M, Qt::ControlModifier);
         QVERIFY(window->property("markdown").toBool());
         auto source = window->findChild<QQuickItem *>("sourceEditor");
         QVERIFY(source && source->isVisible() && source->hasActiveFocus());
@@ -1737,7 +1831,7 @@ class HypeTests : public QObject {
         QCOMPARE(flick->property("contentY").toDouble(), initialScroll + 180);
         QCOMPARE(d.source(), beforeToggle);
 
-        QTest::keyClick(window, Qt::Key_E, Qt::ControlModifier);
+        QTest::keyClick(window, Qt::Key_M, Qt::ControlModifier | Qt::ShiftModifier);
         QVERIFY(!window->property("markdown").toBool());
         QVERIFY(stage->isVisible() && editor->isVisible());
         QVERIFY(stage->hasActiveFocus());
