@@ -53,6 +53,9 @@ function format(source, start, end, kind) {
             placeholder = "code"
         } else if (kind === "comment") {
             open = "<!-- "; close = " -->"; placeholder = "Comment"
+        } else if (kind === "underline") {
+            // Hype's Markdown dialect reads _underscores_ as underline and *asterisks* as italic.
+            open = close = "_"; placeholder = "underlined text"
         } else if (kind === "bold" || kind === "italic") {
             open = close = kind === "bold" ? "**" : "*"
             placeholder = kind === "bold" ? "bold text" : "italic text"

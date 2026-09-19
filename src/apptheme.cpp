@@ -60,9 +60,26 @@ void AppTheme::reload() {
                              {"selectionText", contrastInk(selection)},
                              {"accentText", contrastInk(accent)},
                              {"accentHover", mix(accent, fg, .15)},
+                             {"windowBorder", values.value("active_border_color", accent)},
                              {"error", values.value("red", QColor("#d94b4b"))}};
-    if (colors != m_colors) {
+    // Popups take the desktop's window corners: square unless the theme rounds them.
+    int rounding = 0;
+    QStringList windowFiles;
+    for (const auto &name : {"/hyprland.lua", "/hyprland.conf"}) {
+        QFile window(theme + name);
+        if (!window.open(QIODevice::ReadOnly))
+            continue;
+        windowFiles.append(theme + name);
+        const QRegularExpression entry(R"re(^\s*rounding\s*=\s*(\d+))re");
+        while (!window.atEnd()) {
+            const auto match = entry.match(QString::fromUtf8(window.readLine()));
+            if (match.hasMatch())
+                rounding = match.captured(1).toInt();
+        }
+    }
+    if (colors != m_colors || rounding != m_rounding) {
         m_colors = colors;
+        m_rounding = rounding;
         emit changed();
     }
     // Theme switching replaces symlinks; atomic saves replace file inodes.
@@ -71,6 +88,7 @@ void AppTheme::reload() {
     if (!watched.isEmpty())
         m_watcher.removePaths(watched);
     QStringList paths{m_currentDirectory, theme, path};
+    paths.append(windowFiles);
     QString ancestor = QFileInfo(m_currentDirectory).absolutePath();
     while (!QFileInfo::exists(ancestor) && ancestor != "/")
         ancestor = QFileInfo(ancestor).absolutePath();

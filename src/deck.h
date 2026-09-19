@@ -139,6 +139,7 @@ class Deck : public QAbstractListModel {
   signals:
     void changed();
     void statusChanged();
+    void opened(bool existing);
     void compressingImageChanged();
     void exportChanged();
     void exportAdvanced(double progress, const QString &message);

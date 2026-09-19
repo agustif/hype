@@ -8,7 +8,7 @@
 #include <memory>
 class QTextDocument;
 struct Media {
-    QString file, path, poster, error, side, background;
+    QString file, path, poster, error, background;
     bool video = false, span = false, loop = false, muted = false, autoplay = true;
     double overlay = 0;
     QString text;

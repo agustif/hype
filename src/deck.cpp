@@ -538,7 +538,6 @@ QVariantMap Deck::media() const {
     m_mediaCache = {{"url", QUrl::fromLocalFile(m.path)},
                     {"video", m.video},
                     {"animated", animated},
-                    {"side", m.side},
                     {"span", m.span},
                     {"loop", m.loop},
                     {"muted", m.muted},
@@ -698,8 +697,8 @@ void Deck::openDialog() {
     QString error;
     const QString p = FileDialog::choose(false, dialogDirectory(), "Markdown", {"*.md"}, &error);
     if (!error.isEmpty()) setStatus(error);
-    if (!p.isEmpty())
-        loadPath(p);
+    if (!p.isEmpty() && loadPath(p))
+        emit opened(true);
 }
 void Deck::save() {
     if (!m_recoveryDirectory.isEmpty() && !checkpoint())
@@ -806,6 +805,7 @@ void Deck::newDeck() {
         m_checkpointSource.clear();
         checkpoint();
     }
+    emit opened(false);
 }
 void Deck::importDialog() {
     QString error;
@@ -1073,23 +1073,25 @@ void Deck::matchImageBackground(bool enabled) {
     setMediaBackground(enabled ? "auto" : "theme");
 }
 void Deck::setMediaBackground(const QString &mode) {
-    if (!QStringList{"auto", "theme", "blur"}.contains(mode))
+    if (!QStringList{"auto", "theme", "blur", "white", "black"}.contains(mode))
         return;
     auto media = parseMedia(slideSource(), baseDir());
     if (media.file.isEmpty())
         return;
-    const bool fittedBackground = mode == "blur" || (media.video && mode == "auto");
+    // A background only shows around fitted media, so choosing one stops the media spanning.
+    const bool fittedBackground = mode == "blur" || mode == "white" || mode == "black" ||
+                                  (media.video && mode == "auto");
     QStringList remove{"background"}, add{"background=" + mode};
-    if (fittedBackground && media.side.isEmpty()) {
+    if (fittedBackground) {
         remove << "span" << "fit";
         add.prepend("fit");
     }
     editSlide(withMediaDirectives(slideSource(), remove, add));
 }
 void Deck::setMediaMode(const QString &mode) {
-    if (!QStringList{"fit", "span", "left", "right"}.contains(mode))
+    if (!QStringList{"fit", "span"}.contains(mode))
         return;
-    editSlide(withMediaDirectives(slideSource(), {"fit", "span", "left", "right"}, {mode}));
+    editSlide(withMediaDirectives(slideSource(), {"fit", "span"}, {mode}));
 }
 void Deck::exportDialog(const QString &format) {
     if (m_exporting)
@@ -1271,7 +1273,7 @@ bool Deck::exportPdf(const QString &path) {
             return false;
         }
         for (int i = 0; i < count(); ++i) {
-            emit exportAdvanced(double(i) / count(), QString("Exporting PDF · slide %1 of %2").arg(i + 1).arg(count()));
+            emit exportAdvanced(double(i) / count(), QString("Exporting slide %1 of %2").arg(i + 1).arg(count()));
             if (i && !writer.newPage()) {
                 setStatus("Could not create PDF page");
                 return false;
@@ -1298,9 +1300,9 @@ bool Deck::renderImages(const QString &directory, int width, bool convertAnimati
         const double portion = convertAnimations ? 0.8 : 1.0;
         auto progress = [this, i, portion](double fraction, const QString &stage) {
             emit exportAdvanced(portion * (i + fraction) / count(),
-                QString("%1 · slide %2 of %3").arg(stage).arg(i + 1).arg(count()));
+                QString("%1 slide %2 of %3").arg(stage).arg(i + 1).arg(count()));
         };
-        progress(0, "Rendering");
+        progress(0, "Exporting");
         auto errors = slideProblems(slide(i), baseDir());
         if (!errors.isEmpty()) {
             setStatus(QString("Slide %1: %2").arg(i + 1).arg(errors.join("; ")));
@@ -1327,7 +1329,7 @@ bool Deck::renderImages(const QString &directory, int width, bool convertAnimati
                 if (movie.isEmpty())
                     movie = preparePowerPointVideo(
                         media.path, QString("%1/video-%2.mp4").arg(directory).arg(i + 1), &error,
-                        [&](double fraction) { progress(fraction, "Converting video"); });
+                        [&](double fraction) { progress(fraction, "Converting video on"); });
                 if (movie.isEmpty()) {
                     setStatus(QString("Slide %1: %2").arg(i + 1).arg(error));
                     return false;
@@ -1356,7 +1358,7 @@ bool Deck::renderImages(const QString &directory, int width, bool convertAnimati
                     setStatus(QString("Slide %1: %2").arg(i + 1).arg(error));
                     return false;
                 }
-                // Composite the complete slide to preserve crop, side layouts, and alpha.
+                // Composite the complete slide to preserve crop and alpha.
                 entry["video"] = movie;
                 entry["poster"] = name;
                 entry["span"] = true;

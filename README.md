@@ -18,17 +18,17 @@ Then open **Hype** from the app launcher, or run `hype` in a terminal.
 
 Open Hype from your app launcher. It reopens your last presentation; use **Ctrl+N** to start a new one, or **Ctrl+O** to choose a Markdown file.
 
-In **Visual** mode, select a slide in the sidebar and write its Markdown below the preview. Changes appear as you type. Drag the divider to give the preview or editor more room. The mode button shows the current mode as a grid, slide, or `#` icon; click it or press **Ctrl+M** to step through **Overview**, **Visual**, and **Markdown**, and **Ctrl+Shift+M** to step back. Markdown mode edits the whole presentation, with the same formatting bar on top.
+In **Visual** mode, select a slide in the sidebar and write its Markdown below the preview. Changes appear as you type. Drag the divider to give the preview or editor more room. The mode button shows the current mode as a grid, slide, or `#` icon; click it to step through **Overview**, **Visual**, and **Markdown**. **Ctrl+M** flips the overview on and off, returning to the mode you came from, and **Ctrl+.** flips the Markdown source. Markdown mode edits the whole presentation, with the same formatting bar on top.
 
 **Overview** mode fills the window with a grid of every slide. Select, rearrange, duplicate, and delete slides there as you would in the sidebar; the up and down arrows move by a row. Double-click a slide or press **Enter** to open it in Visual mode.
 
-The buttons above the editor apply bold, italic, headlines, code blocks, and hidden comments to your selection. **Media** adds an image or video; **Layout** opens its layout and background options.
+The buttons above the editor apply bold, italic, underline, headlines, code blocks, and hidden comments to your selection. Hype reads `*asterisks*` as italic and `_underscores_` as underline. **Media** adds an image or video; **Layout** opens its layout and background options.
 
 Use **Ctrl+Enter** or right-click a slide to add a slide after the selection. Drag slides to rearrange them—their Markdown moves with them. Hold a dragged slide near the top or bottom of the sidebar or overview to scroll further. Select several slides with **Shift+click** or **Shift+arrows** to move, duplicate, or delete them together.
 
 Hype saves automatically after a one-second typing pause, or every five seconds while you keep typing. Use **Ctrl+S** to choose a file for a new presentation or save immediately. Hype remembers the last directory you opened or saved to.
 
-Every saved version stays in `.hype-backups/` beside your presentation. Hype also keeps local recovery snapshots, including unfinished Markdown and unnamed presentations, and restores your latest draft when you reopen after a crash. Click the **History** clock in the top bar to restore an earlier snapshot; your current version remains available there too. Recovery snapshots contain Markdown and slide boundaries, not copies of images or videos. Unfinished code fences are backed up without replacing the last valid presentation file. Finish them before exporting; Hype checks that every slide will be preserved.
+Every saved version stays in `.hype-backups/` beside your presentation. Hype also keeps local recovery snapshots, including unfinished Markdown and unnamed presentations, and restores your latest draft when you reopen after a crash. Choose **Version history** from the file menu in the top bar to restore an earlier snapshot; your current version remains available there too. Recovery snapshots contain Markdown and slide boundaries, not copies of images or videos. Unfinished code fences are backed up without replacing the last valid presentation file. Finish them before exporting; Hype checks that every slide will be preserved.
 
 Local recovery snapshots live in `~/.local/state/hype/recovery/` (under `$XDG_STATE_HOME` if set). You can also recover a `.hype-backups/` version manually: copy its `.bak` file to a new `.md` file and open it.
 
@@ -108,18 +108,16 @@ Use just the filename; Hype finds the right directory:
 
 A lone image fits without cropping. Text on an image slide is always overlaid, with white lettering, subtle darkening, and a very light blur of the picture for readability. The text stays sharp, and pictures without text stay unblurred. An image with a headline spans by default; `fit` or `background=blur` keeps the whole image visible beneath the text. Videos fit the slide and play once when you reach them during a presentation.
 
-Use the buttons below the preview or put layout options inside the brackets:
+Choose **Fit** or **Span** from the **Layout** menu above the editor, or put layout options inside the brackets:
 
 | Markdown | Result |
 | --- | --- |
 | `![fit](photo.jpg)` | Show the whole image, with text overlaid |
 | `![span](photo.jpg)` | Fill the slide, cropping as needed |
-| `![left](photo.jpg)` | Put the image on the left, with text overlaid |
-| `![right](photo.jpg)` | Put the image on the right, with text overlaid |
 | `![loop muted](demo.mp4)` | Loop a video without sound |
 | `![autoplay=false](demo.mp4)` | Wait for Space to play the video |
 
-For images that leave space around them, Hype matches the background to the image’s edge color when possible. Choose **Background → Use theme color** to override it, or specify a color: `![fit background=#ffffff](diagram.png)`.
+For images that leave space around them, Hype matches the background to the image’s edge color when possible. Choose **White**, **Black**, or **Use theme color** from the **Layout** menu to override it, or specify any color: `![fit background=#ffffff](diagram.png)`. Choosing White or Black also switches spanning media to fit so the background is visible.
 
 Choose **Background → Blurred image** to fill the slide with a stretched, blurred copy behind the sharp fitted image: `![fit background=blur](portrait.jpg)`. The same background appears in PDF and PowerPoint exports. Animated images use their first frame for the blurred background.
 
@@ -135,7 +133,7 @@ Each slide supports one image or video. Copy the whole presentation folder when 
 
 The palette and font icons in the toolbar choose an installed Omarchy theme and a presentation font. Hover to see the current choices. Theme colors apply to text, code, and slide backgrounds; your images keep their original colors. Code stays monospaced. Hype’s interface follows your current desktop theme independently and updates when you change it.
 
-The header shows the slide count and total size of the Markdown and referenced media. Open and Save icons sit in the bottom-right corner; Save is highlighted when you have unsaved changes.
+The header shows the presentation's name with your position in it, such as “Slide 4 of 45”; saving and exporting report their progress on that line. The file icon beside it holds New, Open, Save, Export, and Version history, and is highlighted when you have unsaved changes.
 
 Colors and the font choice are saved in the Markdown file. Install the same font on another computer to keep the typography consistent.
 
@@ -145,7 +143,7 @@ Click **Present** or press **Ctrl+Space** (or **F5**) to toggle fullscreen prese
 
 Finished videos hold their last frame. Press Space again to replay from the beginning.
 
-Choose **Export → PDF** or **PowerPoint** to share your presentation. Both exports are built into Hype. PowerPoint renders slides and converted animations at 4K (3840 × 2160). Slides preserve the rendered appearance rather than exposing editable text and shapes; the receiving computer does not need your fonts installed. Videos are embedded, and animated WebP/GIF images are converted to MP4 automatically without changing the original files. PDF captures still slides.
+Choose **Export as PDF** or **Export as PowerPoint** from the file menu in the top bar, or press **Ctrl+E** for PDF and **Ctrl+Shift+E** for PowerPoint, to share your presentation. Both exports are built into Hype. PowerPoint renders slides and converted animations at 4K (3840 × 2160). Slides preserve the rendered appearance rather than exposing editable text and shapes; the receiving computer does not need your fonts installed. Videos are embedded, and animated WebP/GIF images are converted to MP4 automatically without changing the original files. PDF captures still slides.
 
 Export runs in the background. The top bar shows progress through rendering, video conversion, and packaging under the presentation name, with a **Cancel export** button. You can keep editing; the export uses the presentation as it was when you started. Failed or cancelled exports leave an existing file intact.
 
@@ -161,11 +159,16 @@ Slide navigation and selection shortcuts apply when the sidebar or preview has f
 | --- | --- |
 | Ctrl+N / Ctrl+O | New presentation / open file |
 | Ctrl+S / Ctrl+Shift+S | Save / save as |
-| Ctrl+M / Ctrl+Shift+M | Next / previous mode: Overview, Visual, Markdown |
+| Ctrl+E / Ctrl+Shift+E | Export as PDF / PowerPoint |
+| Ctrl+M | Overview on / off |
+| Ctrl+. | Markdown source on / off |
+| Ctrl+B / Ctrl+I / Ctrl+U | Bold / italic / underline |
+| Ctrl+H / Ctrl+K / Ctrl+/ | Headline / code block / hidden comment |
+| ? / F1 | Show all shortcuts (F1 also works while typing) |
 | Tab / Shift+Tab | Switch between sidebar and Markdown input |
 | Arrow keys | Previous / next slide; up and down move by a row in Overview |
 | Enter | Open the selected slide from Overview |
-| Page Up / Page Down | Jump five slides |
+| Page Up / Page Down | Jump five slides, or five rows in Overview |
 | Home / End | First / last slide |
 | Ctrl+Up or Ctrl+Left | Move selected slides earlier (Ctrl+Up by a row in Overview) |
 | Ctrl+Down or Ctrl+Right | Move selected slides later (Ctrl+Down by a row in Overview) |

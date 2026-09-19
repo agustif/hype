@@ -5,7 +5,7 @@ Item {
     id: icon
     required property string name
     property color color: "black"
-    readonly property bool outlined: ["open", "save", "overview", "visual", "markdown", "code", "history", "export", "bold", "italic", "headline", "comment", "media-add", "adjust", "chevron-down"].indexOf(name) >= 0
+    readonly property bool outlined: ["open", "save", "overview", "visual", "markdown", "code", "check", "file", "history", "export", "bold", "italic", "underline", "headline", "comment", "media-add", "adjust", "chevron-down"].indexOf(name) >= 0
     readonly property real canvasSize: name === "open" || name === "save" ? 16 : 24
     implicitWidth: 24; implicitHeight: 24
     Shape {
@@ -27,11 +27,14 @@ Item {
                     : icon.name === "visual" ? "M2 5H22V19H2Z M6.5 10.5H17.5 M9 14.5H15"
                     : icon.name === "markdown" ? "M9.5 3.5L7.5 20.5 M16.5 3.5L14.5 20.5 M4.5 9H20.5 M3.5 15H19.5"
                     : icon.name === "code" ? "M8 5L2 12L8 19 M16 5L22 12L16 19 M14 3L10 21"
+                    : icon.name === "file" ? "M6 3H14L19 8V21H6Z M14 3V8H19"
+                    : icon.name === "check" ? "M5 12.5L10 17.5L19 7"
                     : icon.name === "history" ? "M3 12A9 9 0 1 0 12 3A9.75 9.75 0 0 0 5.26 5.74L3 8 M3 3V8H8 M12 7V12L16 14"
                     : icon.name === "present" ? "M6 3L21 12L6 21Z"
                     : icon.name === "export" ? "M12 3V15 M7 10L12 15L17 10 M4 15V21H20V15"
                     : icon.name === "bold" ? "M6 4H12A4 4 0 0 1 12 12H6Z M6 12H13A4 4 0 0 1 13 20H6Z"
                     : icon.name === "italic" ? "M10 4H19 M5 20H14 M15 4L9 20"
+                    : icon.name === "underline" ? "M7 4V11A5 5 0 0 0 17 11V4 M5 20H19"
                     : icon.name === "headline" ? "M5 4V20 M19 4V20 M5 12H19"
                     : icon.name === "comment" ? "M21 3H3V17H8V21L13 17H21Z M7 8H17 M7 12H14"
                     : icon.name === "media-add" ? "M13 3H3V21H21V11 M3 17L8 12L12 16L15 13L21 19 M19 2V8 M16 5H22 M9 7A1 1 0 1 0 9 9A1 1 0 1 0 9 7"

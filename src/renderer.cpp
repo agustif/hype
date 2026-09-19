@@ -131,7 +131,7 @@ QString withMediaDirectives(const QString &source, const QStringList &remove,
     const auto first = tokens.match(flags);
     const bool directives =
         first.hasMatch() && first.capturedStart() == 0 &&
-        (QStringList{"fit", "span", "left", "right", "loop", "muted"}.contains(first.captured(1)) ||
+        (QStringList{"fit", "span", "loop", "muted"}.contains(first.captured(1)) ||
          !first.captured(2).isEmpty());
     QStringList kept = add;
     if (directives) {
@@ -166,7 +166,7 @@ static Media readMedia(const QString &source, const QString &base) {
     auto first = tokens.match(flags);
     bool directives =
         first.hasMatch() && first.capturedStart() == 0 &&
-        (QStringList{"fit", "span", "left", "right", "loop", "muted"}.contains(first.captured(1)) ||
+        (QStringList{"fit", "span", "loop", "muted"}.contains(first.captured(1)) ||
          !first.captured(2).isEmpty());
     QString explicitOverlay;
     bool fit = false, span = false;
@@ -187,9 +187,6 @@ static Media readMedia(const QString &source, const QString &base) {
             } else if (key == "fit") {
                 result.span = false;
                 fit = true;
-            } else if (key == "left" || key == "right") {
-                result.side = key;
-                result.span = false;
             } else if (key == "loop")
                 result.loop = value != "false";
             else if (key == "muted")
@@ -210,10 +207,6 @@ static Media readMedia(const QString &source, const QString &base) {
         if (!flags.mid(consumed).trimmed().isEmpty())
             result.error = "Invalid media directive";
     }
-    if (!result.side.isEmpty() && result.video)
-        result.error = "Side placement currently supports images only";
-    if (!result.side.isEmpty() && span)
-        result.error = "Choose side placement or span";
     if (fit && span)
         result.error = "Choose either span or fit";
     // A background choice implies fitting unless span was explicitly requested.
@@ -493,8 +486,6 @@ void layoutSlideText(QTextDocument &doc, const QString &markdown, const QVariant
     sizeSlideText(doc, palette, fontSize, width, centered, code);
 }
 QRectF mediaRect(const Media &media) {
-    if (!media.side.isEmpty())
-        return QRectF(media.side == "left" ? 60 : 980, 60, 880, 960);
     return media.span ? QRectF(0, 0, 1920, 1080)
                       : (!media.video || media.text.trimmed().isEmpty() ? QRectF(70, 50, 1780, 980)
                                                         : QRectF(100, 280, 1720, 730));
@@ -602,7 +593,7 @@ void paintSlide(QPainter *p, const QRectF &target, const QString &source, const 
                 p->fillRect(QRectF(0, 0, 1920, 1080), QColor(0, 0, 0, qRound(media.overlay * 255)));
             if (fg.isEmpty() && !text.isEmpty())
                 palette["foreground"] = "#ffffff";
-        } else if (!text.isEmpty() && media.side.isEmpty())
+        } else if (!text.isEmpty())
             area = QRectF(130, 40, 1660, 205);
     }
     if (backgroundOnly) {

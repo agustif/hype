@@ -149,8 +149,11 @@ class HypeTests : public QObject {
         QVERIFY(QDir().mkpath(light));
         write(dark + "/colors.toml", "background = '#101020'\nforeground = '#eeeeee'\naccent = '#7788ff'\n");
         write(light + "/colors.toml", "background = '#ffffff'\nforeground = '#111111'\naccent = '#224488'\n");
+        write(light + "/hyprland.lua", "hl.config({\n  decoration = {\n    rounding = 6,\n    -- rounding = 12,\n  },\n})\n");
         QVERIFY(QFile::link(dark, current + "/theme"));
         AppTheme theme(current);
+        QCOMPARE(theme.rounding(), 0);
+        QCOMPARE(theme.colors().value("windowBorder").value<QColor>(), QColor("#7788ff"));
         Deck deck;
         const QString source = deck.source();
         const auto palette = deck.palette();
@@ -159,6 +162,7 @@ class HypeTests : public QObject {
         QVERIFY(QFile::link(light, current + "/theme"));
         QTRY_COMPARE(theme.colors().value("background").value<QColor>(), QColor("#ffffff"));
         QCOMPARE(theme.colors().value("foreground").value<QColor>(), QColor("#111111"));
+        QCOMPARE(theme.rounding(), 6);
         QCOMPARE(theme.colors().value("accentText").value<QColor>(), QColor("#ffffff"));
         // Atomic file replacement must work repeatedly after a theme switch.
         for (const auto &color : {"#112233", "#334455"}) {
@@ -748,11 +752,10 @@ class HypeTests : public QObject {
         QVERIFY(!m.autoplay);
         m = parseMedia("![span fit](photo.jpg)", "/tmp/deck");
         QVERIFY(!m.error.isEmpty());
+        // Side placement is gone; a lone "left" is ordinary alt text again.
         m = parseMedia("![left](photo.jpg)\n\n# Text", "/tmp/deck");
-        QCOMPARE(m.side, QString("left"));
-        QVERIFY(!m.span);
-        m = parseMedia("![left span](photo.jpg)", "/tmp/deck");
-        QVERIFY(!m.error.isEmpty());
+        QVERIFY(m.error.isEmpty());
+        QVERIFY(m.span);
     }
     void codeIsNotMedia() {
         QString source = "```markdown\n![](missing.png)\n<!-- Keep this code -->\n```";
@@ -1222,11 +1225,11 @@ class HypeTests : public QObject {
         QTRY_VERIFY(!loader->property("active").toBool());
         QTRY_VERIFY(!loader->property("item").value<QObject *>());
         d.select(0);
-        d.editSlide("![right autoplay=false](demo.webp)\n\n# Caption");
+        d.editSlide("![fit autoplay=false](demo.webp)\n\n# Caption");
         QTRY_VERIFY(loader->property("item").value<QObject *>());
         animation = loader->property("item").value<QObject *>();
         QTRY_VERIFY(animation->property("paused").toBool());
-        QCOMPARE(d.media()["side"].toString(), QString("right"));
+        QVERIFY(!d.media()["span"].toBool());
         window->setProperty("presenting", true);
         QTest::keyClick(window, Qt::Key_Space);
         QTRY_VERIFY(!animation->property("paused").toBool());
@@ -1252,6 +1255,12 @@ class HypeTests : public QObject {
         auto plainBold = edit(italic.property("text").toString(), 11, 16, "italic");
         QCOMPARE(plainBold.property("text").toString(), bold.property("text").toString());
         QCOMPARE(edit("# Hello **world**", 10, 15, "bold").property("text").toString(), "# Hello world");
+        auto underline = edit("# Hello world", 8, 13, "underline");
+        QCOMPARE(underline.property("text").toString(), "# Hello _world_");
+        QCOMPARE(underline.property("start").toInt(), 9);
+        QCOMPARE(underline.property("end").toInt(), 14);
+        QCOMPARE(edit("# Hello _world_", 9, 14, "underline").property("text").toString(), "# Hello world");
+        QCOMPARE(edit("", 0, 0, "underline").property("text").toString(), "_underlined text_");
         QCOMPARE(edit("one\ntwo\nthree", 1, 8, "headline").property("text").toString(), "# one\n# two\nthree");
         QCOMPARE(edit("# one\n# two\nthree", 0, 12, "headline").property("text").toString(), "one\ntwo\nthree");
         QCOMPARE(edit("\nFollowing", 0, 0, "headline").property("text").toString(), "# Headline\nFollowing");
@@ -1328,6 +1337,18 @@ class HypeTests : public QObject {
         QCOMPARE(editor->property("selectedText").toString(), QString("world"));
         deck.undo();
         QCOMPARE(deck.slideText(), QString("Hello world"));
+        // The formatting hotkeys act on the same selection.
+        QVERIFY(QMetaObject::invokeMethod(editor, "select", Q_ARG(int, 0), Q_ARG(int, 5)));
+        QTest::keyClick(window, Qt::Key_I, Qt::ControlModifier);
+        QCOMPARE(deck.slideText(), QString("*Hello* world"));
+        QTest::keyClick(window, Qt::Key_B, Qt::ControlModifier);
+        QCOMPARE(deck.slideText(), QString("***Hello*** world"));
+        QTest::keyClick(window, Qt::Key_U, Qt::ControlModifier);
+        QCOMPARE(deck.slideText(), QString("***_Hello_*** world"));
+        deck.undo();
+        deck.undo();
+        deck.undo();
+        QCOMPARE(deck.slideText(), QString("Hello world"));
         QVERIFY(QMetaObject::invokeMethod(editor, "select", Q_ARG(int, 0), Q_ARG(int, 11)));
         QVERIFY(QMetaObject::invokeMethod(window, "formatSlide", Q_ARG(QVariant, "code")));
         QCOMPARE(deck.slideText(), QString("```\nHello world\n```"));
@@ -1384,14 +1405,21 @@ class HypeTests : public QObject {
         auto grid = window->findChild<QQuickItem *>("overviewGrid");
         auto list = window->findChild<QQuickItem *>("thumbnails");
         QVERIFY(grid && list);
-        // Ctrl+M walks Visual → Markdown → Overview; Ctrl+Shift+M walks back.
+        // Ctrl+M flips the overview on and off, returning to the mode it came from;
+        // Ctrl+. flips the Markdown source.
         QCOMPARE(window->property("mode").toString(), QString("visual"));
-        QTest::keyClick(window, Qt::Key_M, Qt::ControlModifier | Qt::ShiftModifier);
+        QTest::keyClick(window, Qt::Key_M, Qt::ControlModifier);
         QCOMPARE(window->property("mode").toString(), QString("overview"));
         QTest::keyClick(window, Qt::Key_M, Qt::ControlModifier);
         QCOMPARE(window->property("mode").toString(), QString("visual"));
+        QTest::keyClick(window, Qt::Key_Period, Qt::ControlModifier);
+        QCOMPARE(window->property("mode").toString(), QString("markdown"));
+        QTest::keyClick(window, Qt::Key_M, Qt::ControlModifier);
+        QCOMPARE(window->property("mode").toString(), QString("overview"));
         QTest::keyClick(window, Qt::Key_M, Qt::ControlModifier);
         QCOMPARE(window->property("mode").toString(), QString("markdown"));
+        QTest::keyClick(window, Qt::Key_Period, Qt::ControlModifier);
+        QCOMPARE(window->property("mode").toString(), QString("visual"));
         QTest::keyClick(window, Qt::Key_M, Qt::ControlModifier);
         QCOMPARE(window->property("mode").toString(), QString("overview"));
         QTRY_VERIFY(grid->isVisible());
@@ -1414,6 +1442,11 @@ class HypeTests : public QObject {
         QCOMPARE(d.selected(), columns);
         QTest::keyClick(window, Qt::Key_Up);
         QCOMPARE(d.selected(), 0);
+        // Page Down and Page Up jump five rows.
+        QTest::keyClick(window, Qt::Key_PageDown);
+        QCOMPARE(d.selected(), qMin(d.count() - 1, 5 * columns));
+        QTest::keyClick(window, Qt::Key_PageUp);
+        QCOMPARE(d.selected(), 0);
         // Ctrl+Down carries the slide a whole row.
         QTest::keyClick(window, Qt::Key_Down, Qt::ControlModifier);
         QCOMPARE(d.selected(), columns);
@@ -1431,11 +1464,75 @@ class HypeTests : public QObject {
         QVERIFY(d.slide(0).contains("# S2"));
         QVERIFY(d.slide(1).contains("# S1"));
         QVERIFY(d.slide(2).contains("# S3"));
+        // The slide menu opens from the overview too.
+        QTest::mouseClick(window, Qt::RightButton, Qt::NoModifier, center(1));
+        QTRY_VERIFY(window->property("popupOpen").toBool());
+        if (qEnvironmentVariableIsSet("HYPE_MENU_SCREENSHOT")) {
+            QTest::mouseMove(window, center(1) + QPoint(40, 20));
+            QTest::qWait(300);
+            QVERIFY(window->grabWindow().save(qEnvironmentVariable("HYPE_MENU_SCREENSHOT")));
+        }
+        QTest::keyClick(window, Qt::Key_Escape);
+        QTRY_VERIFY(!window->property("popupOpen").toBool());
+        // The logo opens the shortcuts overlay too.
+        auto logo = window->findChild<QQuickItem *>("hypeLogo");
+        QVERIFY(logo);
+        QTest::mouseClick(window, Qt::LeftButton, Qt::NoModifier, logo->mapToScene(QPointF(logo->width() / 2, logo->height() / 2)).toPoint());
+        QTRY_VERIFY(window->findChild<QObject *>("shortcutsOverlay")->property("opened").toBool());
+        QTest::keyClick(window, Qt::Key_Escape);
+        QTRY_VERIFY(!window->property("popupOpen").toBool());
+        // ? toggles the shortcuts overlay. (Ctrl+E and Ctrl+Shift+E open native save
+        // dialogs, so they are not pressed here.)
+        auto shortcuts = window->findChild<QObject *>("shortcutsOverlay");
+        QVERIFY(shortcuts);
+        QTest::keyClick(window, Qt::Key_Question, Qt::ShiftModifier);
+        QTRY_VERIFY(shortcuts->property("opened").toBool());
+        if (qEnvironmentVariableIsSet("HYPE_SHORTCUTS_SCREENSHOT")) {
+            QTest::qWait(300);
+            QVERIFY(window->grabWindow().save(qEnvironmentVariable("HYPE_SHORTCUTS_SCREENSHOT")));
+        }
+        QTest::keyClick(window, Qt::Key_Question, Qt::ShiftModifier, 50);
+        QTRY_VERIFY(!shortcuts->property("visible").toBool());
+        // Clicking a menu button again closes its menu.
+        QTest::qWait(250); // Let the Escape above age past the press-to-dismiss window.
+        auto fileButton = window->findChild<QQuickItem *>("fileButton");
+        auto fileMenu = window->findChild<QObject *>("fileMenu");
+        QVERIFY(fileButton && fileMenu);
+        const QPoint filePoint = fileButton->mapToScene(QPointF(fileButton->width() / 2, fileButton->height() / 2)).toPoint();
+        QTest::mouseClick(window, Qt::LeftButton, Qt::NoModifier, filePoint);
+        QTRY_VERIFY(fileMenu->property("opened").toBool());
+        if (qEnvironmentVariableIsSet("HYPE_FILE_MENU_SCREENSHOT")) {
+            QTest::qWait(300);
+            QVERIFY(window->grabWindow().save(qEnvironmentVariable("HYPE_FILE_MENU_SCREENSHOT")));
+        }
+        QTest::mouseClick(window, Qt::LeftButton, Qt::NoModifier, filePoint, 50);
+        QTRY_VERIFY(!fileMenu->property("visible").toBool());
+        QTest::qWait(250);
+        QVERIFY(!fileMenu->property("visible").toBool());
+        QTest::mouseClick(window, Qt::LeftButton, Qt::NoModifier, filePoint);
+        QTRY_VERIFY(fileMenu->property("opened").toBool());
+        QTest::keyClick(window, Qt::Key_Escape);
+        QTRY_VERIFY(!window->property("popupOpen").toBool());
         // Enter opens the selected slide in Visual mode.
         QTest::keyClick(window, Qt::Key_Return);
         QCOMPARE(window->property("mode").toString(), QString("visual"));
         QTRY_VERIFY(list->isVisible());
         QCOMPARE(d.selected(), 1);
+        // An opened presentation starts in the sidebar; a new one starts in the editor.
+        auto slideEditor = window->findChild<QQuickItem *>("slideEditor");
+        QVERIFY(slideEditor);
+        emit d.opened(true);
+        QTRY_VERIFY(list->hasActiveFocus());
+        emit d.opened(false);
+        QTRY_VERIFY(slideEditor->hasActiveFocus());
+        QTRY_COMPARE(slideEditor->property("selectedText").toString(), d.slideText().trimmed().mid(2));
+        emit d.opened(true);
+        QTRY_VERIFY(list->hasActiveFocus());
+        // A slide added from the sidebar is ready to type into.
+        const int slidesBefore = d.count();
+        QTest::keyClick(window, Qt::Key_Return, Qt::ControlModifier);
+        QCOMPARE(d.count(), slidesBefore + 1);
+        QTRY_VERIFY(slideEditor->hasActiveFocus());
     }
     void visualOperations() {
         if (!qEnvironmentVariableIsSet("HYPE_GUI_TESTS"))
@@ -1524,7 +1621,7 @@ class HypeTests : public QObject {
         const int pasteSlide = d.selected();
         QTest::keyClick(window, Qt::Key_PageDown);
         QCOMPARE(d.selected(), pasteSlide);
-        QTest::keyClick(window, Qt::Key_M, Qt::ControlModifier | Qt::ShiftModifier);
+        QTest::keyClick(window, Qt::Key_Period, Qt::ControlModifier);
         QVERIFY(!window->property("markdown").toBool());
         if (qEnvironmentVariableIsSet("HYPE_PASTE_SCREENSHOT")) {
             QTest::qWait(100);
@@ -1561,7 +1658,7 @@ class HypeTests : public QObject {
         QVERIFY(d.source().contains("ordinary paste"));
         window->requestActivate();
         QTRY_VERIFY(window->isActive());
-        QTest::keyClick(window, Qt::Key_M, Qt::ControlModifier | Qt::ShiftModifier);
+        QTest::keyClick(window, Qt::Key_Period, Qt::ControlModifier);
         QString trial = QFINDTESTDATA("../trials/rails-world-2023/presentation.md");
         if (!trial.isEmpty()) {
             QVERIFY(d.loadPath(trial));
@@ -1780,7 +1877,7 @@ class HypeTests : public QObject {
         QTest::keyClick(window, Qt::Key_PageUp);
         QCOMPARE(d.selected(), selected);
         QString beforeToggle = d.source();
-        QTest::keyClick(window, Qt::Key_M, Qt::ControlModifier);
+        QTest::keyClick(window, Qt::Key_Period, Qt::ControlModifier);
         QVERIFY(window->property("markdown").toBool());
         auto source = window->findChild<QQuickItem *>("sourceEditor");
         QVERIFY(source && source->isVisible() && source->hasActiveFocus());
@@ -1831,7 +1928,7 @@ class HypeTests : public QObject {
         QCOMPARE(flick->property("contentY").toDouble(), initialScroll + 180);
         QCOMPARE(d.source(), beforeToggle);
 
-        QTest::keyClick(window, Qt::Key_M, Qt::ControlModifier | Qt::ShiftModifier);
+        QTest::keyClick(window, Qt::Key_Period, Qt::ControlModifier);
         QVERIFY(!window->property("markdown").toBool());
         QVERIFY(stage->isVisible() && editor->isVisible());
         QVERIFY(stage->hasActiveFocus());
@@ -1989,9 +2086,18 @@ class HypeTests : public QObject {
         d.setMediaBackground("blur");
         QVERIFY(d.slideText().contains("alt=\"fit left right span loop\""));
         QVERIFY(d.slideText().startsWith(examples));
+        d.editSlide("# Headline\n![span](photo.png)");
+        d.setMediaBackground("white");
+        QVERIFY(d.slideText().endsWith("![fit background=white](photo.png)"));
+        QVERIFY(parseMedia(d.slideText(), {}).error.isEmpty());
+        QVERIFY(!parseMedia(d.slideText(), {}).span);
+        d.setMediaBackground("black");
+        QVERIFY(d.slideText().endsWith("![fit background=black](photo.png)"));
+        d.setMediaBackground("theme");
+        QCOMPARE(parseMedia(d.slideText(), {}).background, QString("theme"));
         d.editSlide("![Sloop rigging](photo.png)");
-        d.setMediaMode("left");
-        QCOMPARE(parseMedia(d.slideText(), {}).side, QString("left"));
+        d.setMediaMode("fit");
+        QVERIFY(!parseMedia(d.slideText(), {}).span);
         QVERIFY(parseMedia(d.slideText(), {}).error.isEmpty());
         QVERIFY(d.slideText().contains("alt=\"Sloop rigging\""));
         QVERIFY(!parseMedia("```sh\n# Comment\n```\n![](photo.png)", {}).span);
@@ -2194,7 +2300,7 @@ class HypeTests : public QObject {
         QVERIFY(deck.savePath(tmp.path() + "/talk.md"));
         Thumbnails provider(&deck);
         for (const QString &layout : {QString("fit"), QString("background=blur"),
-                                     QString("fit background=auto"), QString("left"), QString("right")}) {
+                                     QString("fit background=auto")}) {
             const QString mediaSource = "![" + layout + "](portrait.png)";
             deck.editSlide(mediaSource + "\n\n# Headline");
             const auto media = parseMedia(deck.slideSource(), deck.baseDir());
