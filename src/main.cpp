@@ -1,3 +1,4 @@
+#include "apptheme.h"
 #include "deck.h"
 #include "renderer.h"
 #include <QApplication>
@@ -52,6 +53,7 @@ int main(int argc, char **argv) {
     }
     QQuickStyle::setStyle("Basic");
     qmlRegisterType<SlideItem>("Hype", 1, 0, "SlideCanvas");
+    qmlRegisterType<AppTheme>("Hype", 1, 0, "AppTheme");
     QQmlApplicationEngine engine;
     QObject::connect(&engine, &QQmlEngine::warnings, [](const QList<QQmlError> &errors) {
         for (const auto &error : errors)

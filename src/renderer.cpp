@@ -143,7 +143,7 @@ Media parseMedia(const QString &source, const QString &base) {
                 explicitOverlay = value;
             else if (key == "background") {
                 result.background = value;
-                if (value != "auto" && value != "theme" && !QColor(value).isValid())
+                if (value != "auto" && value != "theme" && value != "blur" && !QColor(value).isValid())
                     result.error = "Invalid background color";
             } else if (key == "poster")
                 result.poster = assetPath(base, value, false);
@@ -240,6 +240,47 @@ static QImage loadedImage(const QString &path) {
     if (!image.isNull())
         cache.insert(key, new QImage(image), qMax(1, int(image.sizeInBytes() / 1024)));
     return image;
+}
+static QImage blurredBackground(const QImage &image) {
+    // Blur at a small, fixed resolution, then scale smoothly with the slide.
+    // Cache per decoded image so editing text or resizing never repeats the work.
+    static thread_local QCache<qint64, QImage> cache(16 * 1024);
+    const qint64 key = image.cacheKey();
+    if (auto *cached = cache.object(key))
+        return *cached;
+    QImage blurred = image.scaled(320, 180, Qt::IgnoreAspectRatio, Qt::SmoothTransformation)
+                         .convertToFormat(QImage::Format_ARGB32_Premultiplied);
+    constexpr int radius = 8, diameter = radius * 2 + 1;
+    // Three separable box passes approximate a Gaussian, with clamped edges to
+    // avoid dark borders. Average premultiplied channels to preserve transparency.
+    for (int pass = 0; pass < 6; ++pass) {
+        const bool horizontal = pass % 2 == 0;
+        const int length = horizontal ? blurred.width() : blurred.height();
+        const int lines = horizontal ? blurred.height() : blurred.width();
+        QImage output(blurred.size(), blurred.format());
+        for (int line = 0; line < lines; ++line) {
+            auto pixel = [&](int position) {
+                position = qBound(0, position, length - 1);
+                return blurred.pixel(horizontal ? position : line, horizontal ? line : position);
+            };
+            int r = 0, g = 0, b = 0, a = 0;
+            auto add = [&](QRgb color, int sign) {
+                r += sign * qRed(color); g += sign * qGreen(color);
+                b += sign * qBlue(color); a += sign * qAlpha(color);
+            };
+            for (int offset = -radius; offset <= radius; ++offset)
+                add(pixel(offset), 1);
+            for (int position = 0; position < length; ++position) {
+                output.setPixel(horizontal ? position : line, horizontal ? line : position,
+                                qRgba(r / diameter, g / diameter, b / diameter, a / diameter));
+                add(pixel(position - radius), -1);
+                add(pixel(position + radius + 1), 1);
+            }
+        }
+        blurred = output;
+    }
+    cache.insert(key, new QImage(blurred), int(blurred.sizeInBytes() / 1024));
+    return blurred;
 }
 static QString slideProperty(const QString &source, const QString &key) {
     QRegularExpression re("<!--\\s*hype:[\\s\\S]*?\\b" + key + "=\"([^\"]*)\"[\\s\\S]*?-->");
@@ -350,6 +391,8 @@ void paintSlide(QPainter *p, const QRectF &target, const QString &source, const 
             media.video ? (media.poster.isEmpty() ? ensurePoster(media.path, base) : media.poster)
                         : media.path;
         QImage image = loadedImage(path);
+        if (!overlayOnly && !media.span && media.background == "blur" && !image.isNull())
+            p->drawImage(QRectF(0, 0, 1920, 1080), blurredBackground(image));
         if (!media.video && !media.span && media.background != "theme" &&
             (bg.isEmpty() || !media.background.isEmpty())) {
             QColor color(media.background);

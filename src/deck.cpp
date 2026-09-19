@@ -15,6 +15,7 @@
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QLocale>
 #include <QMessageBox>
 #include <QMimeData>
 #include <QPainter>
@@ -22,6 +23,7 @@
 #include <QProcess>
 #include <QRegularExpression>
 #include <QSaveFile>
+#include <QSet>
 #include <QSettings>
 #include <QStandardPaths>
 #include <QTemporaryDir>
@@ -360,6 +362,35 @@ void Deck::discoverThemes() {
                 m_themes[name] = path;
         }
 }
+qint64 Deck::totalBytes() const {
+    const QString base = baseDir();
+    if (m_totalBytes >= 0 && m_sizeSource == m_source && m_sizeBase == base)
+        return m_totalBytes;
+    qint64 bytes = m_source.toUtf8().size();
+    QSet<QString> files;
+    for (const auto &slide : m_parsed.slides) {
+        const auto media = parseMedia(slide.source, base);
+        for (const auto &path : {media.path, media.poster}) {
+            if (path.isEmpty())
+                continue;
+            const QFileInfo file(path);
+            if (!file.isFile())
+                continue;
+            const QString identity = file.canonicalFilePath();
+            if (!files.contains(identity)) {
+                files.insert(identity);
+                bytes += file.size();
+            }
+        }
+    }
+    m_sizeSource = m_source;
+    m_sizeBase = base;
+    m_totalBytes = bytes;
+    return bytes;
+}
+QString Deck::sizeLabel() const {
+    return QLocale().formattedDataSize(totalBytes(), 0, QLocale::DataSizeSIFormat);
+}
 QStringList Deck::fontNames() const { return QFontDatabase::families(); }
 QString Deck::fontName() const { return scalar(m_parsed.header, "font", "JetBrains Mono"); }
 void Deck::chooseFont(const QString &family) {
@@ -532,7 +563,7 @@ void Deck::save() {
 }
 void Deck::saveAs() {
     QString p = QFileDialog::getSaveFileName(
-        nullptr, "Save presentation",
+        nullptr, "Save File",
         QDir(dialogDirectory())
             .filePath(m_path.isEmpty() ? "presentation.md" : QFileInfo(m_path).fileName()),
         "Markdown (*.md)");
@@ -576,7 +607,7 @@ void Deck::newDeck() {
     watch();
 }
 void Deck::importDialog() {
-    QString p = QFileDialog::getOpenFileName(nullptr, "Add image or video", baseDir(),
+    QString p = QFileDialog::getOpenFileName(nullptr, "Open File", baseDir(),
                                              "Media (*.png *.jpg *.jpeg *.webp *.gif "
                                              "*.svg *.mp4 *.mov *.mkv *.webm *.m4v)");
     if (!p.isEmpty())
@@ -734,6 +765,11 @@ QString Deck::renderId(int index) const {
         bytes.toBase64(QByteArray::Base64UrlEncoding | QByteArray::OmitTrailingEquals));
 }
 void Deck::matchImageBackground(bool enabled) {
+    setImageBackground(enabled ? "auto" : "theme");
+}
+void Deck::setImageBackground(const QString &mode) {
+    if (!QStringList{"auto", "theme", "blur"}.contains(mode))
+        return;
     auto media = parseMedia(slideSource(), baseDir());
     if (media.file.isEmpty() || media.video)
         return;
@@ -747,7 +783,7 @@ void Deck::matchImageBackground(bool enabled) {
     if (!flags.isEmpty() && !flags.contains('=') &&
         !QStringList{"fit", "left", "right", "span"}.contains(flags.trimmed()))
         flags = "alt=\"" + flags.replace('"', "\\\"") + "\"";
-    flags += enabled ? " background=auto" : " background=theme";
+    flags += " background=" + mode;
     source.replace(match.capturedStart(1), match.capturedLength(1), flags.trimmed());
     editSlide(source);
 }
@@ -767,7 +803,7 @@ void Deck::setMediaMode(const QString &mode) {
     editSlide(s);
 }
 void Deck::exportDialog(const QString &format) {
-    QString p = QFileDialog::getSaveFileName(nullptr, "Export " + format.toUpper(),
+    QString p = QFileDialog::getSaveFileName(nullptr, "Save File",
                                              baseDir() + "/" + title() + "." + format,
                                              format.toUpper() + " (*." + format + ")");
     if (p.isEmpty())

@@ -15,3 +15,6 @@ LIBS += -lz -lwebpdemux -lwebp
 
 SOURCES += ../src/animationexport.cpp
 HEADERS += ../src/animationexport.h
+
+SOURCES += ../src/apptheme.cpp
+HEADERS += ../src/apptheme.h

@@ -1,3 +1,4 @@
+#include "apptheme.h"
 #include "deck.h"
 #include "renderer.h"
 #include "syntax.h"
@@ -13,6 +14,7 @@
 #include <QQuickStyle>
 #include <QQuickWindow>
 #include <QSettings>
+#include <QSaveFile>
 #include <QTemporaryDir>
 #include <QTextCursor>
 #include <QtTest>
@@ -29,6 +31,53 @@ class HypeTests : public QObject {
     void initTestCase() {
         QVERIFY(settingsDirectory.isValid());
         QSettings::setPath(QSettings::IniFormat, QSettings::UserScope, settingsDirectory.path());
+    }
+    void followsDesktopTheme() {
+        QTemporaryDir files;
+        const QString current = files.path() + "/current";
+        const QString dark = files.path() + "/dark";
+        const QString light = files.path() + "/light";
+        QVERIFY(QDir().mkpath(current));
+        QVERIFY(QDir().mkpath(dark));
+        QVERIFY(QDir().mkpath(light));
+        write(dark + "/colors.toml", "background = '#101020'\nforeground = '#eeeeee'\naccent = '#7788ff'\n");
+        write(light + "/colors.toml", "background = '#ffffff'\nforeground = '#111111'\naccent = '#224488'\n");
+        QVERIFY(QFile::link(dark, current + "/theme"));
+        AppTheme theme(current);
+        Deck deck;
+        const QString source = deck.source();
+        const auto palette = deck.palette();
+        QCOMPARE(theme.colors().value("background").value<QColor>(), QColor("#101020"));
+        QVERIFY(QFile::remove(current + "/theme"));
+        QVERIFY(QFile::link(light, current + "/theme"));
+        QTRY_COMPARE(theme.colors().value("background").value<QColor>(), QColor("#ffffff"));
+        QCOMPARE(theme.colors().value("foreground").value<QColor>(), QColor("#111111"));
+        QCOMPARE(theme.colors().value("accentText").value<QColor>(), QColor("#ffffff"));
+        // Atomic file replacement must work repeatedly after a theme switch.
+        for (const auto &color : {"#112233", "#334455"}) {
+            QSaveFile file(light + "/colors.toml");
+            QVERIFY(file.open(QIODevice::WriteOnly));
+            file.write(QByteArray("background = '") + color + "'\n");
+            QVERIFY(file.commit());
+            QTRY_COMPARE(theme.colors().value("background").value<QColor>(), QColor(color));
+        }
+        QCOMPARE(deck.source(), source);
+        QCOMPARE(deck.palette(), palette);
+    }
+    void presentationSize() {
+        QTemporaryDir files;
+        QVERIFY(QDir().mkpath(files.path() + "/images"));
+        write(files.path() + "/images/picture.png", "image bytes");
+        const QString source = "# Héllo\n---\n![](picture.png)\n---\n![](picture.png)\n---\n![](missing.png)\n";
+        write(files.path() + "/talk.md", source);
+        Deck deck;
+        QVERIFY(deck.loadPath(files.path() + "/talk.md"));
+        QCOMPARE(deck.totalBytes(), source.toUtf8().size() + qint64(11));
+        deck.select(1);
+        QCOMPARE(deck.totalBytes(), source.toUtf8().size() + qint64(11));
+        deck.editSource("# Text only\n");
+        QCOMPARE(deck.totalBytes(), qint64(12));
+        QVERIFY(!deck.sizeLabel().isEmpty());
     }
     void remembersPresentationDirectory() {
         QTemporaryDir files;
@@ -423,6 +472,7 @@ class HypeTests : public QObject {
         QCOMPARE(thumbnail.pixelColor(96, 54), QColor(Qt::red));
         QQuickStyle::setStyle("Basic");
         qmlRegisterType<SlideItem>("Hype", 1, 0, "SlideCanvas");
+        qmlRegisterType<AppTheme>("Hype", 1, 0, "AppTheme");
         QQmlApplicationEngine engine;
         engine.rootContext()->setContextProperty("deck", &d);
         engine.addImageProvider("slides", new Thumbnails(&d));
@@ -466,6 +516,7 @@ class HypeTests : public QObject {
             QSKIP("Set HYPE_GUI_TESTS=1 with local multimedia access");
         QQuickStyle::setStyle("Basic");
         qmlRegisterType<SlideItem>("Hype", 1, 0, "SlideCanvas");
+        qmlRegisterType<AppTheme>("Hype", 1, 0, "AppTheme");
         Deck d;
         d.editSource("# One\n\n---\n\n# Two\n\n---\n\n# Three\n");
         QQmlApplicationEngine engine;
@@ -478,8 +529,9 @@ class HypeTests : public QObject {
         QTest::qWait(300);
         auto list = window->findChild<QQuickItem *>("thumbnails");
         QVERIFY(list);
+        const double slideStep = list->property("slideStep").toDouble();
         auto a = list->mapToScene(QPointF(100, 50)).toPoint(),
-             b = list->mapToScene(QPointF(100, 410)).toPoint();
+             b = list->mapToScene(QPointF(100, 2 * slideStep + 90)).toPoint();
         QTest::mousePress(window, Qt::LeftButton, Qt::NoModifier, a);
         for (int step = 1; step <= 20; ++step)
             QTest::mouseMove(window, a + (b - a) * step / 20, 10);
@@ -494,16 +546,10 @@ class HypeTests : public QObject {
         QVERIFY(d.slide(0).contains("# One"));
         d.undo();
         QCOMPARE(d.selected(), 2);
-        auto duplicate = window->findChild<QQuickItem *>("duplicateButton");
-        QVERIFY(duplicate);
-        QTest::mouseClick(window, Qt::LeftButton, Qt::NoModifier,
-                          duplicate->mapToScene(QPointF(40, 20)).toPoint());
+        QTest::keyClick(window, Qt::Key_D, Qt::ControlModifier);
         QCOMPARE(d.count(), 4);
         QVERIFY(d.slide(3).contains("# One"));
-        auto add = window->findChild<QQuickItem *>("newSlideButton");
-        QVERIFY(add);
-        QTest::mouseClick(window, Qt::LeftButton, Qt::NoModifier,
-                          add->mapToScene(QPointF(40, 20)).toPoint());
+        QTest::keyClick(window, Qt::Key_Return, Qt::ControlModifier);
         QCOMPARE(d.count(), 5);
         QVERIFY(d.slideSource().trimmed().isEmpty());
         d.undo();
@@ -643,7 +689,7 @@ class HypeTests : public QObject {
         QCOMPARE(d.selectionCount(), 1);
         QCOMPARE(d.source(), many);
         QTest::qWait(100);
-        const auto thirdSlide = list->mapToScene(QPointF(100, 340)).toPoint();
+        const auto thirdSlide = list->mapToScene(QPointF(100, 2 * slideStep + 50)).toPoint();
         QTest::mouseClick(window, Qt::LeftButton, Qt::ShiftModifier, thirdSlide);
         QCOMPARE(d.selectionFirst(), 0);
         QCOMPARE(d.selectionLast(), 2);
@@ -656,8 +702,8 @@ class HypeTests : public QObject {
         d.undo();
         QCOMPARE(d.source(), many);
         QCOMPARE(d.selectionCount(), 3);
-        const auto groupStart = list->mapToScene(QPointF(100, 196)).toPoint();
-        const auto groupEnd = list->mapToScene(QPointF(100, 550)).toPoint();
+        const auto groupStart = list->mapToScene(QPointF(100, slideStep + 50)).toPoint();
+        const auto groupEnd = list->mapToScene(QPointF(100, 4 * slideStep - 30)).toPoint();
         QTest::mousePress(window, Qt::LeftButton, Qt::NoModifier, groupStart);
         for (int step = 1; step <= 20; ++step)
             QTest::mouseMove(window, groupStart + (groupEnd - groupStart) * step / 20, 10);
@@ -708,13 +754,15 @@ class HypeTests : public QObject {
             "Test touchpad", 1001, QInputDevice::DeviceType::TouchPad,
             QPointingDevice::PointerType::Finger,
             QInputDevice::Capability::Position | QInputDevice::Capability::Scroll, 5, 0);
-        QWheelEvent touchpadWheel(point, window->mapToGlobal(point.toPoint()), QPoint(0, -146),
-                                  QPoint(0, -120), Qt::NoButton, Qt::NoModifier, Qt::ScrollUpdate,
-                                  false, Qt::MouseEventSynthesizedBySystem, &touchpad);
+        QWheelEvent touchpadWheel(point, window->mapToGlobal(point.toPoint()),
+                                  QPoint(0, -qRound(slideStep)), QPoint(0, -120), Qt::NoButton,
+                                  Qt::NoModifier, Qt::ScrollUpdate, false,
+                                  Qt::MouseEventSynthesizedBySystem, &touchpad);
         QCoreApplication::sendEvent(window, &touchpadWheel);
         QCOMPARE(d.selected(), 1);
-        QWheelEvent pixelWheel(point, window->mapToGlobal(point.toPoint()), QPoint(0, -146),
-                               QPoint(), Qt::NoButton, Qt::NoModifier, Qt::ScrollUpdate, false,
+        QWheelEvent pixelWheel(point, window->mapToGlobal(point.toPoint()),
+                               QPoint(0, -qRound(slideStep)), QPoint(), Qt::NoButton,
+                               Qt::NoModifier, Qt::ScrollUpdate, false,
                                Qt::MouseEventSynthesizedBySystem, &touchpad);
         QCoreApplication::sendEvent(window, &pixelWheel);
         QCOMPARE(d.selected(), 2);
@@ -743,6 +791,13 @@ class HypeTests : public QObject {
         QVERIFY(editor && editor->isVisible() && stage->isVisible());
         editor->forceActiveFocus();
         QVERIFY(editor->hasActiveFocus());
+        const QString beforeJump = d.source();
+        QTest::keyClick(window, Qt::Key_End);
+        QCOMPARE(d.selected(), d.count() - 1);
+        QTest::keyClick(window, Qt::Key_Home);
+        QCOMPARE(d.selected(), 0);
+        QCOMPARE(d.source(), beforeJump);
+        d.select(20);
         const QString beforeTab = d.source();
         QTest::keyClick(window, Qt::Key_Tab);
         QVERIFY(list->hasActiveFocus());
@@ -844,10 +899,12 @@ class HypeTests : public QObject {
         QVERIFY(!window->property("markdown").toBool());
         QVERIFY(stage->isVisible() && editor->isVisible());
         QVERIFY(stage->hasActiveFocus());
-        window->setProperty("presenting", true);
+        QTest::keyClick(window, Qt::Key_Space, Qt::ControlModifier);
+        QVERIFY(window->property("presenting").toBool());
         QVERIFY(!window->findChild<QQuickItem *>("editorPane")->isVisible());
         QVERIFY(stage->isVisible());
-        window->setProperty("presenting", false);
+        QTest::keyClick(window, Qt::Key_Space, Qt::ControlModifier);
+        QVERIFY(!window->property("presenting").toBool());
         QVERIFY(editor->isVisible());
         QString trial2025 = QFINDTESTDATA("../trials/rails-world-2025/presentation.md");
         if (!trial2025.isEmpty()) {
@@ -977,6 +1034,57 @@ class HypeTests : public QObject {
             qInfo() << (pass ? "Cached" : "Cold") << ids.size()
                     << "trial thumbnails:" << timer.elapsed() << "ms";
         }
+    }
+    void blurredImageBackground() {
+        QTemporaryDir tmp;
+        QVERIFY(QDir().mkpath(tmp.path() + "/images"));
+        QImage portrait(80, 160, QImage::Format_ARGB32_Premultiplied);
+        portrait.fill(Qt::red);
+        {
+            QPainter painter(&portrait);
+            painter.fillRect(0, 80, 80, 80, Qt::blue);
+        }
+        QVERIFY(portrait.save(tmp.path() + "/images/portrait.png"));
+        write(tmp.path() + "/talk.md", "![fit background=theme](portrait.png)\n");
+        Deck deck;
+        QVERIFY(deck.loadPath(tmp.path() + "/talk.md"));
+        const QString original = deck.source();
+        deck.setImageBackground("blur");
+        const auto media = parseMedia(deck.slideSource(), deck.baseDir());
+        QVERIFY(media.error.isEmpty());
+        QCOMPARE(media.background, QString("blur"));
+        QVERIFY(!media.span);
+        Thumbnails provider(&deck);
+        const auto rendered = provider.requestImage(deck.renderId(0), nullptr, QSize(320, 180));
+        QCOMPARE(rendered.pixelColor(0, 0), QColor(Qt::red));
+        QCOMPARE(rendered.pixelColor(0, 179), QColor(Qt::blue));
+        const auto transition = rendered.pixelColor(0, 89);
+        QVERIFY(transition.red() > 80 && transition.blue() > 80);
+        // Only the stretched background is blurred; the foreground remains sharp.
+        QCOMPARE(rendered.pixelColor(160, 80), QColor(Qt::red));
+        QCOMPARE(rendered.pixelColor(160, 100), QColor(Qt::blue));
+        const auto background = provider.requestImage(deck.renderId(0) + "/background", nullptr,
+                                                       QSize(320, 180));
+        QVERIFY(background.pixelColor(160, 80).blue() > 20);
+        QImage large(3840, 2160, QImage::Format_ARGB32_Premultiplied);
+        {
+            QPainter painter(&large);
+            paintSlide(&painter, large.rect(), deck.slideSource(), deck.baseDir(), deck.palette());
+        }
+        QCOMPARE(large.pixelColor(1920, 960), QColor(Qt::red));
+        QVERIFY(large.pixelColor(0, 1074).blue() > 80);
+        deck.matchImageBackground(false);
+        QCOMPARE(parseMedia(deck.slideSource(), deck.baseDir()).background, QString("theme"));
+        deck.undo();
+        QCOMPARE(parseMedia(deck.slideSource(), deck.baseDir()).background, QString("blur"));
+        deck.undo();
+        QCOMPARE(deck.source(), original);
+        // Transparent artwork should reveal the theme, without black blur fringes.
+        portrait.fill(Qt::transparent);
+        QVERIFY(portrait.save(tmp.path() + "/images/transparent.png"));
+        deck.editSlide("![fit background=blur](transparent.png)");
+        QCOMPARE(provider.requestImage(deck.renderId(0), nullptr, QSize(320, 180)).pixelColor(0, 0),
+                 deck.background());
     }
     void backgroundAndCache() {
         QTemporaryDir tmp;

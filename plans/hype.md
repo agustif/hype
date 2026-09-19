@@ -48,7 +48,7 @@ The Markdown pane shows the result immediately; saving writes that same document
 
 The right pane shows the selected slide as a preview. A per-slide Markdown editor is always visible below it, separated by a draggable divider. Keep layout automatic, with a few alignment and media controls. Direct canvas text editing is a later enhancement.
 
-Selecting a thumbnail updates both the preview and the Markdown pane below it. Visual mode keeps both panes visible. The Visual/Markdown buttons and Ctrl+E switch to a full-document Markdown editor and back, preserving selection and edits; the selected source starts at the top. Presentation mode hides the editor. Visual operations modify the same source document. A font dropdown beside the theme selects an installed font and stores it in front matter; code remains monospaced.
+Selecting a thumbnail updates both the preview and the Markdown pane below it. Visual mode keeps both panes visible. A single button shows the current mode (Visual or Markdown); clicking it or pressing Ctrl+E switches to a full-document Markdown editor and back, preserving selection and edits; the selected source starts at the top. Presentation mode hides the editor. Visual operations modify the same source document. A font dropdown beside the theme selects an installed font and stores it in front matter; code remains monospaced.
 
 Use a conventional Save action and a dirty indicator. Detect external changes: reload a clean document; when local edits exist, offer Reload or Save a Copy rather than silently overwriting. Save atomically. Defer automatic crash recovery and merging. One document-owned undo history spans source edits and visual operations; route both editors through it and disable their separate undo histories.
 
@@ -168,6 +168,10 @@ Code fitting measures the widest line and total block height using actual font m
 Discover installed themes using Omarchy's actual theme locations: `$OMARCHY_PATH/themes/` and `~/.config/omarchy/themes/`, with user themes taking precedence. The checked-out Omarchy currently stores the selected theme under `~/.local/state/omarchy/current/theme`; use the installation/XDG paths rather than copying a path assumption from an older app.
 
 Read each theme's `colors.toml`. Map background, foreground, accent, and semantic colors to slides and code highlighting. Theme selection previews the entire deck. Choosing a presentation theme must not change the desktop theme.
+
+For fitted images, `background=blur` stretches a blurred copy across the slide behind the sharp image. Offer it in the Background menu alongside edge matching and theme color. Cache the blur and use the same rendering for previews and exports; animated images use a still first-frame background.
+
+The app interface follows the active desktop theme independently, watching its colors file and theme symlink for changes. Palette and font icons open the presentation pickers; the footer uses Omawrite's save/open icons. The title includes slide count and the combined size of the Markdown and unique referenced media. Native file pickers use “Open File” and “Save File” titles to match Omarchy's floating-window rules.
 
 Snapshot the resolved palette into the deck's YAML front matter when choosing a theme. Keep its name as attribution and offer an explicit refresh from the installed theme. This makes colors portable and stable after desktop theme changes. Store font choices too; report substitution when a font is missing. Omarchy's palette does not prescribe a presentation font. Offer to copy a chosen theme wallpaper into `images/` as a background.
 

@@ -34,6 +34,7 @@ class Deck : public QAbstractListModel {
     Q_PROPERTY(bool dirty READ dirty NOTIFY changed)
     Q_PROPERTY(QString path READ path NOTIFY changed)
     Q_PROPERTY(QString title READ title NOTIFY changed)
+    Q_PROPERTY(QString sizeLabel READ sizeLabel NOTIFY changed)
     Q_PROPERTY(QString status READ status NOTIFY statusChanged)
     Q_PROPERTY(QStringList fontNames READ fontNames CONSTANT)
     Q_PROPERTY(QString fontName READ fontName NOTIFY changed)
@@ -61,6 +62,8 @@ class Deck : public QAbstractListModel {
     bool dirty() const { return m_source != m_saved; }
     QString path() const { return m_path; }
     QString title() const;
+    qint64 totalBytes() const;
+    QString sizeLabel() const;
     QString status() const { return m_status; }
     QStringList fontNames() const;
     QString fontName() const;
@@ -108,6 +111,7 @@ class Deck : public QAbstractListModel {
     Q_INVOKABLE void exportDialog(const QString &format);
     Q_INVOKABLE QString renderId(int index) const;
     Q_INVOKABLE void matchImageBackground(bool enabled);
+    Q_INVOKABLE void setImageBackground(const QString &mode);
     Q_INVOKABLE void setMediaMode(const QString &mode);
     Q_INVOKABLE void setStatus(const QString &status);
   signals:
@@ -122,6 +126,8 @@ class Deck : public QAbstractListModel {
         int anchor;
     };
     mutable QString m_paletteHeader, m_mediaSource, m_mediaBase;
+    mutable QString m_sizeSource, m_sizeBase;
+    mutable qint64 m_totalBytes = -1;
     mutable QVariantMap m_mediaCache;
     mutable QVariantMap m_paletteCache;
     QString m_source, m_saved, m_path, m_status;

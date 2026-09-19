@@ -9,11 +9,14 @@ ApplicationWindow {
     width: 1400; height: 900; minimumWidth: 900; minimumHeight: 600
     visible: true
     title: deck.title + (deck.dirty ? " •" : "") + " — Hype"
-    color: "#11131b"
-    palette.window: "#171923"; palette.base: "#11131b"; palette.text: "#c0caf5"
-    palette.windowText: "#c0caf5"; palette.button: "#24283b"; palette.buttonText: "#c0caf5"
-    palette.highlight: deck.accent; palette.highlightedText: "#11131b"
-    palette.mid: "#33467c"; palette.light: "#414868"; palette.dark: "#24283b"
+    AppTheme { id: appTheme }
+    readonly property var ui: appTheme.colors
+    color: ui.background
+    palette.window: win.ui.panel; palette.base: win.ui.background; palette.text: win.ui.foreground
+    palette.placeholderText: win.ui.muted
+    palette.windowText: win.ui.foreground; palette.button: win.ui.button; palette.buttonText: win.ui.foreground
+    palette.highlight: win.ui.selection; palette.highlightedText: win.ui.selectionText
+    palette.mid: win.ui.hover; palette.light: win.ui.border; palette.dark: win.ui.button
     property var document: deck
     property bool markdown: false
     property bool syncingEditor: false
@@ -54,6 +57,12 @@ ApplicationWindow {
             return
         }
         let control = event.modifiers & Qt.ControlModifier
+        if (!win.markdown && editor === slideEditor && event.modifiers === Qt.NoModifier &&
+            (event.key === Qt.Key_Home || event.key === Qt.Key_End)) {
+            event.accepted = true
+            deck.select(event.key === Qt.Key_Home ? 0 : deck.count - 1)
+            return
+        }
         if (control && event.key === Qt.Key_Z) {
             event.accepted = true
             event.modifiers & Qt.ShiftModifier ? deck.redo() : deck.undo()
@@ -175,14 +184,14 @@ ApplicationWindow {
         }
         onOpened: { pasteName.forceActiveFocus(); pasteName.selectAll() }
         onClosed: { deck.cancelPaste(); if (returnFocus) returnFocus.forceActiveFocus() }
-        background: Rectangle { color: "#171923"; border.color: "#414868"; radius: 8 }
+        background: Rectangle { color: win.ui.panel; border.color: win.ui.border; radius: 8 }
         Overlay.modal: Rectangle { color: "#660b0d14" }
         contentItem: ColumnLayout {
             spacing: 18
             ColumnLayout {
                 spacing: 6
-                Label { text: pasteDialog.isVideo ? "Paste video" : "Paste image"; color: "#c0caf5"; font.pixelSize: 20; font.bold: true }
-                Label { text: "Save to " + (pasteDialog.isVideo ? "videos/" : "images/"); color: "#7f89ac"; font.pixelSize: 14 }
+                Label { text: pasteDialog.isVideo ? "Paste video" : "Paste image"; color: win.ui.foreground; font.pixelSize: 20; font.bold: true }
+                Label { text: "Save to " + (pasteDialog.isVideo ? "videos/" : "images/"); color: win.ui.muted; font.pixelSize: 14 }
             }
             RowLayout {
                 Layout.fillWidth: true; spacing: 10
@@ -190,33 +199,33 @@ ApplicationWindow {
                     id: pasteName; objectName: "pasteName"
                     Accessible.name: "Filename"
                     Layout.fillWidth: true; implicitHeight: 44
-                    font.pixelSize: 16; color: "#c0caf5"
-                    selectionColor: "#33467c"; selectedTextColor: "#c0caf5"
+                    font.pixelSize: 16; color: win.ui.foreground
+                    selectionColor: win.ui.selection; selectedTextColor: win.ui.selectionText
                     leftPadding: 12; rightPadding: 12
-                    background: Rectangle { color: "#11131b"; radius: 4; border.color: pasteName.activeFocus ? "#7aa2f7" : "#414868" }
+                    background: Rectangle { color: win.ui.background; radius: 4; border.color: pasteName.activeFocus ? win.ui.accent : win.ui.border }
                     onTextEdited: pasteDialog.error = ""
                     onAccepted: if (text.trim()) pasteDialog.save()
                 }
-                Label { text: "." + pasteDialog.extension; color: "#7f89ac"; font.pixelSize: 16 }
+                Label { text: "." + pasteDialog.extension; color: win.ui.muted; font.pixelSize: 16 }
             }
             Label {
                 Layout.fillWidth: true; visible: text.length > 0
-                text: pasteDialog.error; color: "#f7768e"; font.pixelSize: 13; wrapMode: Text.Wrap
+                text: pasteDialog.error; color: win.ui.error; font.pixelSize: 13; wrapMode: Text.Wrap
             }
             RowLayout {
                 Layout.fillWidth: true; spacing: 10
                 Item { Layout.fillWidth: true }
                 Button {
                     id: cancelPasteButton; text: "Cancel"; implicitHeight: 38; implicitWidth: 84
-                    contentItem: Text { text: parent.text; color: "#c0caf5"; font.pixelSize: 14; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
-                    background: Rectangle { color: cancelPasteButton.hovered ? "#343b58" : "#24283b"; radius: 4; border.color: cancelPasteButton.activeFocus ? "#7aa2f7" : "transparent" }
+                    contentItem: Text { text: parent.text; color: win.ui.foreground; font.pixelSize: 14; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
+                    background: Rectangle { color: cancelPasteButton.hovered ? win.ui.hover : win.ui.button; radius: 4; border.color: cancelPasteButton.activeFocus ? win.ui.accent : "transparent" }
                     onClicked: pasteDialog.close()
                 }
                 Button {
                     id: savePasteButton; text: "Save " + (pasteDialog.isVideo ? "video" : "image")
                     implicitHeight: 38; implicitWidth: 112; enabled: pasteName.text.trim().length > 0
-                    contentItem: Text { text: parent.text; color: "#11131b"; font.pixelSize: 14; font.bold: true; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
-                    background: Rectangle { color: !savePasteButton.enabled ? "#414868" : savePasteButton.hovered ? "#9abbff" : "#7aa2f7"; radius: 4; border.color: savePasteButton.activeFocus ? "#c0caf5" : "transparent" }
+                    contentItem: Text { text: parent.text; color: win.ui.accentText; font.pixelSize: 14; font.bold: true; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
+                    background: Rectangle { color: !savePasteButton.enabled ? win.ui.border : savePasteButton.hovered ? win.ui.accentHover : win.ui.accent; radius: 4; border.color: savePasteButton.activeFocus ? win.ui.foreground : "transparent" }
                     onClicked: pasteDialog.save()
                 }
             }
@@ -228,7 +237,7 @@ ApplicationWindow {
     Shortcut { enabled: !pasteDialog.visible; sequences: [StandardKey.SaveAs]; onActivated: deck.saveAs() }
     Shortcut { sequence: "Ctrl+E"; enabled: !pasteDialog.visible && (!win.presenting); onActivated: win.setMarkdownMode(!win.markdown) }
     Shortcut { enabled: !pasteDialog.visible; sequence: "Ctrl+N"; onActivated: deck.newDeck() }
-    Shortcut { enabled: !pasteDialog.visible; sequence: "F5"; onActivated: win.togglePresent() }
+    Shortcut { enabled: !pasteDialog.visible; sequences: ["F5", "Ctrl+Space"]; autoRepeat: false; onActivated: win.togglePresent() }
     Shortcut { sequence: "Escape"; enabled: !pasteDialog.visible && (win.presenting); onActivated: win.togglePresent() }
     Shortcut { sequence: "Ctrl+Z"; enabled: !pasteDialog.visible && (!slideEditor.activeFocus && !sourceEditor.activeFocus); onActivated: deck.undo() }
     Shortcut { sequence: "Ctrl+Shift+Z"; enabled: !pasteDialog.visible && (!slideEditor.activeFocus && !sourceEditor.activeFocus); onActivated: deck.redo() }
@@ -249,28 +258,50 @@ ApplicationWindow {
     Shortcut { sequence: "Ctrl+V"; enabled: !pasteDialog.visible && (!slideEditor.activeFocus && !sourceEditor.activeFocus); onActivated: deck.pasteMedia() }
     header: ToolBar {
         visible: !win.presenting; height: visible ? 60 : 0
-        background: Rectangle { color: "#171923"; border.color: "#292e42" }
+        background: Rectangle { color: win.ui.panel; border.color: win.ui.border }
         RowLayout {
             anchors.fill: parent; anchors.leftMargin: 20; anchors.rightMargin: 18; spacing: 12
-            Label { text: "Hype"; font.pixelSize: 22; font.bold: true; color: deck.accent }
-            Label { text: "·  " + deck.title; elide: Text.ElideRight; Layout.maximumWidth: 280; color: "#a9b1d6" }
-            ToolButton { text: "Open"; onClicked: deck.openDialog() }
-            ToolButton { text: deck.dirty ? "Save •" : "Save"; onClicked: deck.save() }
-            Item { Layout.fillWidth: true }
-            Button { text: "Visual"; highlighted: !win.markdown; onClicked: win.setMarkdownMode(false) }
-            Button { text: "Markdown"; highlighted: win.markdown; onClicked: win.setMarkdownMode(true) }
-            ComboBox { id: themes;
+            Label { text: "Hype"; font.pixelSize: 22; font.bold: true; color: win.ui.accent }
+            Label {
+                objectName: "deckSummary"
+                text: "·  " + deck.title + "  ·  " + deck.count + (deck.count === 1 ? " slide" : " slides") + "  ·  " + deck.sizeLabel
+                elide: Text.ElideRight; Layout.fillWidth: true; Layout.minimumWidth: 0; color: win.ui.foreground
+            }
+            ComboBox {
+                id: themes; objectName: "themePicker"
+                Layout.preferredWidth: 40; Layout.preferredHeight: 40
+                padding: 0; indicator: null
+                contentItem: Item {
+                    AppIcon { anchors.centerIn: parent; width: 22; height: 22; name: "theme"; color: win.ui.foreground }
+                }
+                Accessible.name: "Theme: " + currentText
+                ToolTip.visible: hovered; ToolTip.text: "Theme: " + currentText
                 delegate: ItemDelegate {
                     required property string modelData
                     required property int index
-                    width: themes.width
+                    width: themes.popup.availableWidth
                     text: modelData
                     highlighted: themes.highlightedIndex === index
-                    contentItem: Text { text: modelData; color: "#c0caf5"; font: themes.font; verticalAlignment: Text.AlignVCenter }
-                    background: Rectangle { color: parent.highlighted ? "#33467c" : "#171923" }
+                    contentItem: Text { text: modelData; color: win.ui.foreground; font: themes.font; verticalAlignment: Text.AlignVCenter }
+                    background: Rectangle { color: parent.highlighted ? win.ui.hover : win.ui.panel }
                 }
-                background: Rectangle { color: themes.hovered ? "#33467c" : "#24283b"; radius: 3 }
- model: deck.themeNames; currentIndex: Math.max(0, deck.themeNames.indexOf(deck.themeName)); onActivated: deck.chooseTheme(currentText); Layout.preferredWidth: 165 }
+                background: Rectangle { color: themes.hovered ? win.ui.hover : win.ui.button; radius: 3 }
+                model: deck.themeNames
+                currentIndex: Math.max(0, deck.themeNames.indexOf(deck.themeName))
+                onActivated: deck.chooseTheme(currentText)
+                popup: Popup {
+                    y: themes.height + 4; width: 240; padding: 6
+                    height: Math.min(contentItem.implicitHeight + 12, 420, win.height - 100)
+                    background: Rectangle { color: win.ui.panel; border.color: win.ui.border; radius: 3 }
+                    contentItem: ListView {
+                        clip: true; implicitHeight: contentHeight
+                        model: themes.popup.visible ? themes.delegateModel : null
+                        currentIndex: themes.highlightedIndex
+                        ScrollBar.vertical: ScrollBar {}
+                    }
+                    onOpened: contentItem.positionViewAtIndex(themes.currentIndex, ListView.Contain)
+                }
+            }
             ComboBox {
                 id: fonts; objectName: "fontPicker"
                 property bool showNotoVariants: false
@@ -288,20 +319,25 @@ ApplicationWindow {
                         Qt.callLater(function() { fonts.popup.open() })
                     } else deck.chooseFont(visibleFonts[index])
                 }
-                Layout.preferredWidth: 190
+                Layout.preferredWidth: 40; Layout.preferredHeight: 40
+                padding: 0; indicator: null
+                contentItem: Item {
+                    AppIcon { anchors.centerIn: parent; width: 22; height: 22; name: "font"; color: win.ui.foreground }
+                }
+                Accessible.name: "Font: " + deck.fontName
                 delegate: ItemDelegate {
                     required property string modelData
                     required property int index
                     width: fonts.popup.availableWidth; text: modelData
                     highlighted: fonts.highlightedIndex === index
-                    contentItem: Text { text: modelData; color: "#c0caf5"; font: fonts.font; elide: Text.ElideRight; verticalAlignment: Text.AlignVCenter }
-                    background: Rectangle { color: parent.highlighted ? "#33467c" : "#171923" }
+                    contentItem: Text { text: modelData; color: win.ui.foreground; font: fonts.font; elide: Text.ElideRight; verticalAlignment: Text.AlignVCenter }
+                    background: Rectangle { color: parent.highlighted ? win.ui.hover : win.ui.panel }
                 }
-                background: Rectangle { color: fonts.hovered ? "#33467c" : "#24283b"; radius: 3 }
+                background: Rectangle { color: fonts.hovered ? win.ui.hover : win.ui.button; radius: 3 }
                 popup: Popup {
                     y: fonts.height + 4; width: 320; padding: 6
                     height: Math.min(contentItem.implicitHeight + 12, 420, win.height - 100)
-                    background: Rectangle { color: "#171923"; border.color: "#34384b"; radius: 3 }
+                    background: Rectangle { color: win.ui.panel; border.color: win.ui.border; radius: 3 }
                     contentItem: ListView {
                         clip: true; implicitHeight: contentHeight
                         model: fonts.popup.visible ? fonts.delegateModel : null
@@ -310,7 +346,13 @@ ApplicationWindow {
                     }
                     onOpened: contentItem.positionViewAtIndex(fonts.currentIndex, ListView.Contain)
                 }
-                ToolTip.visible: hovered; ToolTip.text: "Presentation font"
+                ToolTip.visible: hovered; ToolTip.text: "Font: " + deck.fontName
+            }
+            Button {
+                text: win.markdown ? "Markdown" : "Visual"
+                onClicked: win.setMarkdownMode(!win.markdown)
+                ToolTip.visible: hovered
+                ToolTip.text: (win.markdown ? "Switch to Visual" : "Switch to Markdown") + " (Ctrl+E)"
             }
             Button { text: "▶ Present"; onClicked: win.togglePresent() }
             Button { text: "Export"; onClicked: exportMenu.open(); Menu { id: exportMenu; MenuItem { text: "PDF"; onTriggered: deck.exportDialog("pdf") } MenuItem { text: "PowerPoint"; onTriggered: deck.exportDialog("pptx") } } }
@@ -318,17 +360,32 @@ ApplicationWindow {
     }
     footer: ToolBar {
         visible: !win.presenting; height: visible ? 34 : 0
-        background: Rectangle { color: "#171923" }
+        background: Rectangle { color: win.ui.panel }
         RowLayout { anchors.fill: parent; anchors.leftMargin: 20; anchors.rightMargin: 20
             Label { text: deck.selectionCount > 1 ? deck.selectionCount + " slides selected" : "Slide " + (deck.selected+1) + " of " + deck.count; font.pixelSize: 12 }
-            Label { text: deck.status; elide: Text.ElideRight; Layout.fillWidth: true; horizontalAlignment: Text.AlignHCenter; font.pixelSize: 12; color: "#7f89ac" }
-            Label { text: deck.dirty ? "Unsaved" : "Saved"; font.pixelSize: 12 }
+            Label { text: deck.status; elide: Text.ElideRight; Layout.fillWidth: true; horizontalAlignment: Text.AlignHCenter; font.pixelSize: 12; color: win.ui.muted }
+            ToolButton {
+                objectName: "saveButton"; Layout.preferredWidth: 28; Layout.preferredHeight: 28
+                Accessible.name: deck.dirty ? "Save unsaved changes" : "Save presentation"
+                contentItem: Item { AppIcon { anchors.centerIn: parent; width: 16; height: 16; name: "save"; color: deck.dirty ? win.ui.accent : win.ui.muted } }
+                background: Rectangle { color: parent.hovered ? win.ui.hover : "transparent"; radius: 3 }
+                ToolTip.visible: hovered; ToolTip.text: (deck.dirty ? "Save changes" : "Saved") + " (Ctrl+S)"
+                onClicked: deck.save()
+            }
+            ToolButton {
+                objectName: "openButton"; Layout.preferredWidth: 28; Layout.preferredHeight: 28
+                Accessible.name: "Open presentation"
+                contentItem: Item { AppIcon { anchors.centerIn: parent; width: 16; height: 16; name: "open"; color: win.ui.muted } }
+                background: Rectangle { color: parent.hovered ? win.ui.hover : "transparent"; radius: 3 }
+                ToolTip.visible: hovered; ToolTip.text: "Open (Ctrl+O)"
+                onClicked: deck.openDialog()
+            }
         }
     }
     RowLayout {
         anchors.fill: parent; spacing: 0
         Rectangle {
-            visible: !win.presenting; Layout.preferredWidth: 235; Layout.fillHeight: true; color: "#171923"
+            visible: !win.presenting; Layout.preferredWidth: 235; Layout.fillHeight: true; color: win.ui.panel
             ColumnLayout {
                 anchors.fill: parent; anchors.margins: 12; spacing: 10
                 ListView {
@@ -337,7 +394,8 @@ ApplicationWindow {
                     ScrollBar.vertical: ScrollBar { policy: ScrollBar.AlwaysOff }
                     property int wheelDirection: 0
                     property real wheelRemainder: 0
-                    readonly property real slideStep: 136 + spacing
+                    readonly property real thumbnailHeight: 108
+                    readonly property real slideStep: thumbnailHeight + spacing
                     function stopWheel() {
                         wheelDirection = 0
                         wheelRemainder = 0
@@ -387,18 +445,17 @@ ApplicationWindow {
                     }
                     onMovementStarted: stopWheel()
                     delegate: Item {
-                        id: thumbnail; required property int index; required property string slideTitle; required property int number
-                        width: thumbnails.width; height: 136
+                        id: thumbnail; required property int index; required property int number
+                        width: thumbnails.width; height: thumbnails.thumbnailHeight
                         property bool selected: index >= deck.selectionFirst && index <= deck.selectionLast
                         opacity: win.dragIndex >= 0 && selected ? 0.4 : 1
                         Rectangle {
-                            x: 22; width: parent.width - 24; height: 108; color: deck.background
+                            x: 22; width: parent.width - 24; height: parent.height; color: deck.background
                             border.width: deck.selected === thumbnail.index ? 3 : thumbnail.selected ? 2 : 1
-                            border.color: thumbnail.selected ? deck.accent : "#34384b"; radius: 3
+                            border.color: thumbnail.selected ? win.ui.accent : win.ui.border; radius: 3
                             Image { anchors.fill: parent; anchors.margins: 3; source: "image://slides/" + (deck.revision, deck.renderId(thumbnail.index)); asynchronous: true; retainWhileLoading: true; cache: true; sourceSize.width: 340; sourceSize.height: 192; fillMode: Image.PreserveAspectFit }
                         }
-                        Label { text: thumbnail.number; width: 18; y: 4; color: thumbnail.selected ? deck.accent : "#7f89ac"; font.pixelSize: 11 }
-                        Label { x: 24; y: 115; width: parent.width - 28; text: thumbnail.slideTitle; elide: Text.ElideRight; font.pixelSize: 11; color: "#7f89ac" }
+                        Label { text: thumbnail.number; width: 18; y: 4; color: thumbnail.selected ? win.ui.accent : win.ui.muted; font.pixelSize: 11 }
                     }
                     Rectangle {
                         parent: thumbnails; z: 2
@@ -406,7 +463,7 @@ ApplicationWindow {
                         x: 22; width: thumbnails.width - 24; height: 3
                         y: Math.max(0, Math.min(thumbnails.height - height,
                             thumbnails.originY + win.dropIndex * thumbnails.slideStep - thumbnails.contentY - thumbnails.spacing / 2))
-                        color: deck.accent
+                        color: win.ui.accent
                     }
                     MouseArea {
                         id: slideDrag; parent: thumbnails; anchors.fill: parent; z: 1
@@ -468,11 +525,6 @@ ApplicationWindow {
                         MenuItem { text: deck.selectionCount > 1 ? "Delete slides" : "Delete slide"; onTriggered: deck.deleteSlide() }
                     }
                 }
-                Button { objectName: "newSlideButton"; text: "+ New slide"; Layout.fillWidth: true; onClicked: { win.addSlide() } }
-                RowLayout { Layout.fillWidth: true
-                    Button { objectName: "duplicateButton"; text: "Duplicate"; Layout.fillWidth: true; onClicked: deck.duplicateSlide() }
-                    Button { text: "Undo"; onClicked: deck.undo() }
-                }
             }
         }
         SplitView {
@@ -481,7 +533,7 @@ ApplicationWindow {
             Layout.fillWidth: true; Layout.fillHeight: true
             handle: Rectangle {
                 implicitHeight: win.presenting ? 0 : 6
-                color: SplitHandle.hovered || SplitHandle.pressed ? "#7aa2f7" : "#292e42"
+                color: SplitHandle.hovered || SplitHandle.pressed ? win.ui.accent : win.ui.border
             }
             Item {
                 id: stage; objectName: "stage"; SplitView.fillHeight: true; SplitView.minimumHeight: 160; focus: true
@@ -532,15 +584,15 @@ ApplicationWindow {
                 SplitView.maximumHeight: workspace.height * 0.65
             ToolBar {
                 Layout.fillWidth: true
-                background: Rectangle { color: "#171923" }
+                background: Rectangle { color: win.ui.panel }
                 RowLayout { anchors.fill: parent; anchors.leftMargin: 20; spacing: 12
-                    Label { text: "Markdown"; color: "#7f89ac"; font.pixelSize: 12 }
+                    Label { text: "Markdown"; color: win.ui.muted; font.pixelSize: 12 }
                     Button { text: "+ Image / video"; onClicked: deck.importDialog() }
                     Button { text: "Fit"; onClicked: deck.setMediaMode("fit") }
                     Button { text: "Span"; onClicked: deck.setMediaMode("span") }
                     Button { text: "Left"; enabled: !deck.media.video; onClicked: deck.setMediaMode("left") }
                     Button { text: "Right"; enabled: !deck.media.video; onClicked: deck.setMediaMode("right") }
-                    Button { text: "Background"; enabled: !deck.media.video; onClicked: backgroundMenu.open(); Menu { id: backgroundMenu; MenuItem { text: "Match image edges"; onTriggered: deck.matchImageBackground(true) } MenuItem { text: "Use theme color"; onTriggered: deck.matchImageBackground(false) } } }
+                    Button { text: "Background"; enabled: !deck.media.video; onClicked: backgroundMenu.open(); Menu { id: backgroundMenu; MenuItem { text: "Match image edges"; onTriggered: deck.matchImageBackground(true) } MenuItem { text: "Blurred image"; onTriggered: deck.setImageBackground("blur") } MenuItem { text: "Use theme color"; onTriggered: deck.matchImageBackground(false) } } }
                     Item { Layout.fillWidth: true }
                 }
             }
@@ -553,7 +605,7 @@ ApplicationWindow {
                     onWheel: function(event) { win.scrollEditor(slideScroll.contentItem, event) }
                 }
                 TextArea {
-                    id: slideEditor; objectName: "slideEditor"; textFormat: TextEdit.PlainText; color: "#c0caf5"; font.family: "JetBrains Mono"; font.pixelSize: 16
+                    id: slideEditor; objectName: "slideEditor"; textFormat: TextEdit.PlainText; color: win.ui.foreground; selectionColor: win.ui.selection; selectedTextColor: win.ui.selectionText; font.family: "JetBrains Mono"; font.pixelSize: 16
                     wrapMode: TextEdit.Wrap; leftPadding: 24; topPadding: 16; placeholderText: "# Your headline"
                     onTextChanged: {
                         if (!win.syncingEditor && activeFocus) {
@@ -582,7 +634,7 @@ ApplicationWindow {
                 TextArea.flickable: TextArea {
                 id: sourceEditor; objectName: "sourceEditor"
                 textFormat: TextEdit.PlainText
-                color: "#c0caf5"; selectionColor: "#33467c"
+                color: win.ui.foreground; selectionColor: win.ui.selection; selectedTextColor: win.ui.selectionText
                 font.family: "JetBrains Mono"; font.pixelSize: 18
                 wrapMode: TextEdit.NoWrap; leftPadding: 32; topPadding: 30; bottomPadding: 30
                 onTextChanged: { if (!win.syncingEditor && activeFocus && text !== deck.source) deck.editSource(text) }
