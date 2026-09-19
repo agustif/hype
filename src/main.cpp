@@ -3,12 +3,14 @@
 #include "renderer.h"
 #include <QApplication>
 #include <QCommandLineParser>
+#include <QJsonDocument>
+#include <QJsonObject>
+#include <QPointer>
 #include <QQmlApplicationEngine>
 #include <QQmlContext>
 #include <QQuickStyle>
 #include <QQuickWindow>
-#include <QJsonDocument>
-#include <QJsonObject>
+#include <QScopeGuard>
 #include <QTimer>
 #include <cstdio>
 int main(int argc, char **argv) {
@@ -79,6 +81,7 @@ int main(int argc, char **argv) {
         fprintf(success ? stdout : stderr, "%s\n", qPrintable(deck.status()));
         return success ? 0 : 1;
     }
+    deck.enableAutosave();
     QQuickStyle::setStyle("Basic");
     qmlRegisterType<SlideItem>("Hype", 1, 0, "SlideCanvas");
     qmlRegisterType<AppTheme>("Hype", 1, 0, "AppTheme");
@@ -88,7 +91,18 @@ int main(int argc, char **argv) {
             fprintf(stderr, "%s\n", qPrintable(error.toString()));
     });
     engine.rootContext()->setContextProperty("deck", &deck);
-    engine.addImageProvider("slides", new Thumbnails(&deck));
+    QPointer<Thumbnails> thumbnails = new Thumbnails(&deck);
+    engine.addImageProvider("slides", thumbnails);
+    auto drainRenders = [thumbnails] {
+        if (thumbnails)
+            thumbnails->shutdown();
+        // Clipboard image compression can also decode SVG through Qt GUI.
+        QThreadPool::globalInstance()->waitForDone();
+    };
+    // The engine is not the final owner of an async image provider. Drain while
+    // QApplication's fonts, platform integration and GPU resources still exist.
+    QObject::connect(&app, &QCoreApplication::aboutToQuit, &app, drainRenders);
+    const auto renderShutdown = qScopeGuard(drainRenders);
     engine.load(QUrl("qrc:/Main.qml"));
     if (engine.rootObjects().isEmpty())
         return 1;

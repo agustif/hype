@@ -21,3 +21,4 @@ SOURCES += src/images.cpp
 HEADERS += src/images.h
 SOURCES += src/filedialog.cpp
 HEADERS += src/filedialog.h
+SOURCES += src/recovery.cpp

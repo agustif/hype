@@ -6,4 +6,3 @@ Exec=hype %f
 Icon=hype
 Terminal=false
 Categories=Office;Presentation;
-MimeType=text/markdown;

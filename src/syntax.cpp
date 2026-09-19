@@ -1,9 +1,12 @@
 #include "syntax.h"
 #include <QCache>
+#include <QMutex>
 #include <QProcess>
 #include <QRegularExpression>
+#include <QSet>
 #include <QTextBlock>
 #include <QTextCursor>
+#include <QWaitCondition>
 
 static QString highlightedHtml(const QString &source, QString language) {
     language = language.toLower().section(' ', 0, 0);
@@ -11,12 +14,22 @@ static QString highlightedHtml(const QString &source, QString language) {
         {"shell", "sh"}, {"shellscript", "sh"}, {"c++", "cpp"}, {"yml", "yaml"},
         {"rust", "rs"}};
     language = aliases.value(language, language);
-    if (!QRegularExpression("^[a-z0-9+#_-]+$").match(language).hasMatch())
+    static const QRegularExpression validLanguage("^[a-z0-9+#_-]+$");
+    if (!validLanguage.match(language).hasMatch())
         return {};
-    static thread_local QCache<QString, QString> cache(4 * 1024 * 1024);
+    static QCache<QString, QString> cache(4 * 1024 * 1024);
+    static QMutex mutex;
+    static QWaitCondition ready;
+    static QSet<QString> pending;
     const QString key = language + '\n' + source;
-    if (auto html = cache.object(key))
-        return *html;
+    {
+        QMutexLocker lock(&mutex);
+        while (pending.contains(key))
+            ready.wait(&mutex);
+        if (auto html = cache.object(key))
+            return *html;
+        pending.insert(key);
+    }
     QProcess process;
     process.start("source-highlight", {"--src-lang=" + language, "--out-format=html-css"});
     QString html;
@@ -31,7 +44,12 @@ static QString highlightedHtml(const QString &source, QString language) {
             process.waitForFinished();
         }
     }
-    cache.insert(key, new QString(html), qMax(1, int((key.size() + html.size()) * 2)));
+    {
+        QMutexLocker lock(&mutex);
+        cache.insert(key, new QString(html), qMax(1, int((key.size() + html.size()) * 2)));
+        pending.remove(key);
+        ready.wakeAll();
+    }
     return html;
 }
 

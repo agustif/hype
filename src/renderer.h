@@ -1,5 +1,6 @@
 #pragma once
 #include "deck.h"
+#include <QMutex>
 #include <QQuickImageProvider>
 #include <QQuickPaintedItem>
 #include <QThreadPool>
@@ -15,6 +16,8 @@ struct Media {
 QRectF mediaRect(const Media &media);
 QImage softenedImage(const QImage &image, const QSizeF &slideSize);
 QString withMedia(const QString &source, const QString &reference);
+QString withMediaDirectives(const QString &source, const QStringList &remove,
+                            const QStringList &add);
 Media parseMedia(const QString &source, const QString &base);
 QString ensurePoster(const QString &video, const QString &base);
 QStringList slideProblems(const QString &source, const QString &base);
@@ -43,10 +46,13 @@ class Thumbnails : public QQuickAsyncImageProvider {
   public:
     explicit Thumbnails(Deck *deck);
     ~Thumbnails() override;
+    void shutdown();
     QImage requestImage(const QString &id, QSize *size, const QSize &requestedSize) override;
     QQuickImageResponse *requestImageResponse(const QString &id, const QSize &requestedSize) override;
 
   private:
-    QThreadPool m_thumbnails, m_previews, m_cached;
+    QMutex m_submissions;
+    std::shared_ptr<std::atomic_bool> m_stopping = std::make_shared<std::atomic_bool>(false);
+    QThreadPool m_thumbnails, m_previews, m_cached, m_videos;
     std::shared_ptr<std::atomic_uint64_t> m_generation = std::make_shared<std::atomic_uint64_t>(0);
 };

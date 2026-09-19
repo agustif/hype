@@ -1,4 +1,5 @@
 #include "pptx.h"
+#include "renderer.h"
 #include <QBuffer>
 #include <QDataStream>
 #include <QDir>
@@ -174,14 +175,14 @@ void masterColors(Writer &x) {
     element(x, "a:masterClrMapping");
     x.writeEndElement();
 }
-struct Slide {
+struct PowerPointSlide {
     QString image, video, poster, overlay;
     bool autoplay = true, loop = false, muted = false;
     int repeatCount = 1;
     qint64 x = 0, y = 0, width = slideWidth, height = slideHeight;
 };
-void picture(Writer &x, int id, const QString &name, const QString &imageId, const Slide &bounds,
-             bool movie = false) {
+void picture(Writer &x, int id, const QString &name, const QString &imageId,
+             const PowerPointSlide &bounds, bool movie = false) {
     start(x, "p:pic");
     start(x, "p:nvPicPr");
     start(x, "p:cNvPr", {{"id", QString::number(id)}, {"name", name}});
@@ -222,16 +223,16 @@ void picture(Writer &x, int id, const QString &name, const QString &imageId, con
     x.writeEndElement();
     x.writeEndElement();
 }
-QByteArray slideXml(const Slide &slide) {
+QByteArray slideXml(const PowerPointSlide &slide) {
     return xml([&](Writer &x) {
         presentationRoot(x, "p:sld");
         start(x, "p:cSld");
         shapeTree(x);
-        picture(x, 2, "Slide", "rId2", Slide{});
+        picture(x, 2, "PowerPointSlide", "rId2", PowerPointSlide{});
         if (!slide.video.isEmpty()) {
             picture(x, 3, QFileInfo(slide.video).fileName(), "rId5", slide, true);
             if (!slide.overlay.isEmpty())
-                picture(x, 4, "Overlay", "rId6", Slide{});
+                picture(x, 4, "Overlay", "rId6", PowerPointSlide{});
         }
         x.writeEndElement();
         x.writeEndElement();
@@ -325,7 +326,7 @@ QByteArray themeXml() {
     });
 }
 
-bool readSlide(const QJsonObject &entry, const QDir &base, Slide &slide, QString &error) {
+bool readSlide(const QJsonObject &entry, const QDir &base, PowerPointSlide &slide, QString &error) {
     slide.image = base.filePath(entry["image"].toString());
     auto checkImage = [&](const QString &path) {
         // Check contents rather than relying on a filename extension.
@@ -393,9 +394,12 @@ bool readSlide(const QJsonObject &entry, const QDir &base, Slide &slide, QString
             return false;
         }
     } else {
-        const bool title = entry["title"].toBool();
-        const double boxX = title ? 100 : 70, boxY = title ? 280 : 50;
-        const double boxWidth = title ? 1720 : 1780, boxHeight = title ? 730 : 980;
+        Media media;
+        media.video = true;
+        media.text = entry["title"].toBool() ? "Title" : "";
+        const QRectF box = mediaRect(media);
+        const double boxX = box.x(), boxY = box.y();
+        const double boxWidth = box.width(), boxHeight = box.height();
         const double width = std::min(boxWidth, boxHeight * ratio),
                      height = std::min(boxHeight, boxWidth / ratio);
         constexpr double scale = double(slideWidth) / 1920;
@@ -479,10 +483,10 @@ bool writePptx(const QString &manifestPath, const QString &destination, QString 
     if (parseError.error != QJsonParseError::NoError || !document.isObject() ||
         !document.object()["slides"].isArray())
         return fail("Invalid slide manifest: " + parseError.errorString());
-    QList<Slide> slides;
+    QList<PowerPointSlide> slides;
     const auto deck = document.object();
     for (const auto &value : deck["slides"].toArray()) {
-        Slide slide;
+        PowerPointSlide slide;
         QString problem;
         if (!value.isObject())
             return fail("Invalid slide in manifest.");
@@ -595,6 +599,7 @@ bool writePptx(const QString &manifestPath, const QString &destination, QString 
         }
         return "../" + target;
     };
+    QHash<QString, QString> movies;
     for (int i = 0; i < slides.size() && zip.error.isEmpty(); ++i) {
         if (progress) progress(double(i) / slides.size());
         const auto &slide = slides[i];
@@ -602,8 +607,13 @@ bool writePptx(const QString &manifestPath, const QString &destination, QString 
         QList<Relationship> rels{{"rId1", "slideLayout", "../slideLayouts/slideLayout1.xml"},
                                  {"rId2", "image", media(slide.image, "slide" + number)}};
         if (!slide.video.isEmpty()) {
-            const QString movie = "media/video" + number + ".mp4";
-            zip.file("ppt/" + movie, slide.video);
+            const QString identity = QFileInfo(slide.video).canonicalFilePath();
+            QString movie = movies.value(identity);
+            if (movie.isEmpty()) {
+                movie = "media/video" + number + ".mp4";
+                zip.file("ppt/" + movie, slide.video);
+                movies.insert(identity, movie);
+            }
             rels.append({"rId3", "http://schemas.microsoft.com/office/2007/relationships/media",
                          "../" + movie});
             rels.append({"rId4", "video", "../" + movie});

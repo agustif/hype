@@ -13,6 +13,8 @@
 #include <QDBusObjectPath>
 #include <QDBusVirtualObject>
 #include <QFile>
+#include <QJsonDocument>
+#include <QJsonObject>
 #include <QImage>
 #include <QGlyphRun>
 #include <QMimeData>
@@ -326,7 +328,7 @@ class HypeTests : public QObject {
             deck.editSlide("# Revision " + QString::number(i));
             QVERIFY(deck.savePath(path));
         }
-        QCOMPARE(backups.entryList(QDir::Files).size(), 20);
+        QCOMPARE(backups.entryList(QDir::Files).size(), 23);
         const QString blocked = files.path() + "/blocked";
         QVERIFY(QDir().mkpath(blocked));
         write(blocked + "/talk.md", "# Keep me\n");
@@ -338,6 +340,227 @@ class HypeTests : public QObject {
         QVERIFY(original.open(QIODevice::ReadOnly));
         QCOMPARE(original.readAll(), QByteArray("# Keep me\n"));
         QVERIFY(deck.dirty());
+    }
+    void autosaveAndVersionHistory() {
+        QTemporaryDir files;
+        const QString path = files.filePath("talk.md"), recovery = files.filePath("recovery");
+        write(path, "# Original\n---\n# Last\n");
+        Deck deck;
+        QVERIFY(deck.loadPath(path));
+        deck.enableAutosave(recovery);
+        QCOMPARE(deck.recoveryVersions().size(), 1);
+        const auto original = deck.recoveryVersions().first().toMap()["name"].toString();
+        deck.editSlide("# Autosaved");
+        QTRY_VERIFY_WITH_TIMEOUT(!deck.dirty(), 2500);
+        QFile file(path);
+        QVERIFY(file.open(QIODevice::ReadOnly));
+        QCOMPARE(QString::fromUtf8(file.readAll()), deck.source());
+        QVERIFY(deck.recoveryVersions().size() >= 2);
+        const QString autosaved = deck.source();
+        QVERIFY(deck.restoreVersion(original));
+        QCOMPARE(deck.slideText(), "# Original");
+        QVERIFY(!deck.dirty());
+        bool keptCurrent = false;
+        for (const auto &entry : deck.recoveryVersions()) {
+            QVERIFY(deck.restoreVersion(entry.toMap()["name"].toString()));
+            if (deck.source() == autosaved) keptCurrent = true;
+        }
+        QVERIFY(keptCurrent);
+        QVERIFY(!deck.restoreVersion("../../outside.json"));
+    }
+    void continuousTypingStillAutosaves() {
+        QTemporaryDir files;
+        const QString path = files.filePath("talk.md");
+        write(path, "# Original\n");
+        Deck deck;
+        QVERIFY(deck.loadPath(path));
+        deck.enableAutosave(files.filePath("recovery"));
+        QTimer typing;
+        int revision = 0;
+        connect(&typing, &QTimer::timeout, &deck, [&] { deck.editSlide("# Revision " + QString::number(++revision)); });
+        typing.start(100);
+        auto contents = [&] { QFile f(path); if (!f.open(QIODevice::ReadOnly)) return QByteArray(); return f.readAll(); };
+        QTRY_VERIFY_WITH_TIMEOUT(contents().contains("Revision"), 6500);
+        typing.stop();
+        QVERIFY(revision > 10);
+        QVERIFY(deck.flushAutosave());
+        QCOMPARE(QString::fromUtf8(contents()), deck.source());
+    }
+    void recoversIncompleteDraftAndSlideBoundaries() {
+        QTemporaryDir files;
+        const QString path = files.filePath("talk.md"), recovery = files.filePath("recovery");
+        const QString original = "# First\n---\n# Middle\n---\n```ruby\nputs 1\n```\n---\n# Last\n";
+        write(path, original);
+        QString draft;
+        {
+            Deck deck;
+            QVERIFY(deck.loadPath(path));
+            deck.enableAutosave(recovery);
+            deck.select(1);
+            deck.editSlide("```rust\nfn main() {}");
+            draft = deck.source();
+            QVERIFY(deck.flushAutosave());
+            QVERIFY(deck.dirty());
+            QFile file(path); QVERIFY(file.open(QIODevice::ReadOnly));
+            QCOMPARE(QString::fromUtf8(file.readAll()), original);
+        } // No graceful close/save: simulate reopening after the process disappeared.
+        Deck restored;
+        QVERIFY(restored.loadPath(path));
+        restored.enableAutosave(recovery);
+        QCOMPARE(restored.source(), draft);
+        QCOMPARE(restored.count(), 4);
+        QCOMPARE(restored.selected(), 1);
+        QVERIFY(restored.dirty());
+        restored.editSlide("```rust\nfn main() {}\n```");
+        QVERIFY(restored.flushAutosave());
+        QVERIFY(!restored.dirty());
+        QCOMPARE(restored.count(), 4);
+        QCOMPARE(restored.slide(3).trimmed(), "# Last");
+        Deck reopened;
+        QVERIFY(reopened.loadPath(path));
+        QCOMPARE(reopened.count(), 4);
+    }
+    void recoveryRespectsExternalChanges() {
+        QTemporaryDir files;
+        const QString path = files.filePath("talk.md"), recovery = files.filePath("recovery");
+        write(path, "# Original\n");
+        {
+            Deck deck;
+            QVERIFY(deck.loadPath(path));
+            deck.enableAutosave(recovery);
+            deck.editSlide("```rust\nunfinished");
+            QVERIFY(deck.flushAutosave());
+        }
+        write(path, "# External edit\n");
+        Deck recovered;
+        QVERIFY(recovered.loadPath(path));
+        recovered.enableAutosave(recovery);
+        QVERIFY(recovered.slideText().contains("unfinished"));
+        recovered.editSlide("# Recovered and finished");
+        QVERIFY(recovered.flushAutosave());
+        QFile file(path); QVERIFY(file.open(QIODevice::ReadOnly));
+        QCOMPARE(file.readAll(), QByteArray("# External edit\n"));
+        QVERIFY(recovered.dirty());
+        {
+            Deck again;
+            QVERIFY(again.loadPath(path)); again.enableAutosave(recovery);
+            QVERIFY(again.flushAutosave());
+            QFile disk(path); QVERIFY(disk.open(QIODevice::ReadOnly));
+            QCOMPARE(disk.readAll(), QByteArray("# External edit\n"));
+            QVERIFY(again.dirty());
+        }
+        // A clean checkpoint must not replace legitimate external edits.
+        const QString clean = files.filePath("clean.md");
+        write(clean, "# Before\n");
+        { Deck deck; QVERIFY(deck.loadPath(clean)); deck.enableAutosave(recovery); }
+        write(clean, "# After\n");
+        Deck external;
+        QVERIFY(external.loadPath(clean)); external.enableAutosave(recovery);
+        QCOMPARE(external.slideText(), "# After");
+        QVERIFY(!external.dirty());
+    }
+    void recoversUntitledAndRefusesUnbackedAutosave() {
+        QTemporaryDir files;
+        const QString recovery = files.filePath("recovery");
+        { Deck draft; draft.enableAutosave(recovery); draft.editSlide("# Unsaved idea"); QVERIFY(draft.flushAutosave()); }
+        Deck recovered;
+        QVERIFY(!recovered.reopenLastPresentation());
+        recovered.enableAutosave(recovery);
+        QCOMPARE(recovered.slideText(), "# Unsaved idea");
+        QVERIFY(recovered.path().isEmpty());
+        QVERIFY(recovered.savePath(files.filePath("named.md")));
+        Deck blank; blank.enableAutosave(recovery);
+        QVERIFY(blank.slideText() != "# Unsaved idea"); // Save As retires the old unnamed draft.
+        const QString path = files.filePath("talk.md");
+        write(path, "# Keep me\n");
+        write(files.filePath("blocked"), "Not a directory");
+        Deck blocked;
+        QVERIFY(blocked.loadPath(path)); blocked.enableAutosave(files.filePath("blocked"));
+        blocked.editSlide("# New draft");
+        QVERIFY(!blocked.flushAutosave());
+        QFile file(path); QVERIFY(file.open(QIODevice::ReadOnly));
+        QCOMPARE(file.readAll(), QByteArray("# Keep me\n"));
+        QVERIFY(blocked.dirty());
+    }
+    void recoversMissingFileAndDamagedLatestSnapshot() {
+        QTemporaryDir files;
+        const QString path = files.filePath("talk.md"), recovery = files.filePath("recovery");
+        write(path, "# Original\n");
+        {
+            Deck deck;
+            QVERIFY(deck.loadPath(path)); deck.enableAutosave(recovery);
+            deck.editSlide("# Latest work"); QVERIFY(deck.flushAutosave());
+        }
+        QDir root(recovery);
+        const auto folders = root.entryList(QDir::Dirs | QDir::NoDotAndDotDot);
+        QCOMPARE(folders.size(), 1);
+        write(root.filePath(folders.first() + "/latest.json"), "{broken");
+        QVERIFY(QFile::remove(path));
+        Deck restored;
+        QVERIFY(!restored.reopenLastPresentation());
+        restored.enableAutosave(recovery);
+        QCOMPARE(restored.path(), path);
+        QCOMPARE(restored.slideText(), "# Latest work");
+        QVERIFY(restored.dirty());
+        QVERIFY(restored.flushAutosave());
+        QVERIFY(!QFile::exists(path)); // Missing/externally changed files aren't silently replaced.
+        QVERIFY(restored.savePath(files.filePath("restored.md")));
+        QVERIFY(!restored.dirty());
+    }
+    void recoveryHandlesTerminalSeparatorAndNewDeck() {
+        QTemporaryDir files;
+        const QString recovery = files.filePath("recovery");
+        {
+            Deck deck; deck.enableAutosave(recovery);
+            deck.editSource("# No final newline\n---");
+            QVERIFY(deck.flushAutosave());
+        }
+        const QDir root(recovery);
+        const auto folders = root.entryList(QDir::Dirs | QDir::NoDotAndDotDot);
+        QCOMPARE(folders.size(), 1);
+        QVERIFY(QFile::remove(root.filePath(folders.first() + "/latest.json")));
+        Deck restored; restored.enableAutosave(recovery);
+        QCOMPARE(restored.source(), "# No final newline\n---");
+        QCOMPARE(restored.count(), 2);
+        QVERIFY(restored.status() != "Could not read the recovery draft. Earlier versions are available in History.");
+        restored.newDeck();
+        const QString blank = restored.source();
+        restored.undo();
+        QCOMPARE(restored.source(), blank); // Undo never crosses into another presentation.
+        Deck latest; latest.enableAutosave(recovery);
+        QCOMPARE(latest.source(), blank);
+        QVERIFY(latest.recoveryVersions().size() >= 3); // Previous untitled work is still recoverable.
+    }
+    void historyPopupProtectsSlides() {
+        if (!qEnvironmentVariableIsSet("HYPE_GUI_TESTS")) QSKIP("Set HYPE_GUI_TESTS=1");
+        QTemporaryDir files;
+        Deck deck; deck.editSource("# First\n---\n# Last\n");
+        deck.enableAutosave(files.filePath("recovery"));
+        QQuickStyle::setStyle("Basic");
+        qmlRegisterType<SlideItem>("Hype", 1, 0, "SlideCanvas");
+        qmlRegisterType<AppTheme>("Hype", 1, 0, "AppTheme");
+        QQmlApplicationEngine engine;
+        engine.rootContext()->setContextProperty("deck", &deck);
+        engine.addImageProvider("slides", new Thumbnails(&deck));
+        engine.load(QUrl("qrc:/Main.qml"));
+        QVERIFY(!engine.rootObjects().isEmpty());
+        auto window = qobject_cast<QQuickWindow *>(engine.rootObjects().first());
+        auto history = window->findChild<QObject *>("historyDialog");
+        QVERIFY(history);
+        QVERIFY(QMetaObject::invokeMethod(history, "open"));
+        QTRY_VERIFY(history->property("visible").toBool());
+        QTRY_VERIFY(window->property("popupOpen").toBool());
+        const QString source = deck.source();
+        QTest::keyClick(window, Qt::Key_Delete);
+        QTest::keyClick(window, Qt::Key_D, Qt::ControlModifier);
+        QTest::keyClick(window, Qt::Key_Down);
+        QTest::keyClick(window, Qt::Key_End);
+        QCOMPARE(deck.source(), source);
+        QCOMPARE(deck.selected(), 0);
+        QTest::keyClick(window, Qt::Key_Escape);
+        QTRY_VERIFY(!history->property("visible").toBool());
+        window->setProperty("allowClose", true);
+        window->close();
     }
     void fencesAndFrontMatter() {
         QString source = "---\ntitle: Test\n---\n\n# "
@@ -936,6 +1159,11 @@ class HypeTests : public QObject {
         QTRY_COMPARE(player->playbackState(), QMediaPlayer::PlayingState);
         QTRY_VERIFY(frameColor().blue() > 240);
         QVERIFY(player->position() < 600);
+        player->pause();
+        deck.editSlide("![fit background=blur](demo.mp4)");
+        QVERIFY(deck.savePath(files.path() + "/talk.md"));
+        QTest::qWait(100);
+        QCOMPARE(player->playbackState(), QMediaPlayer::PausedState);
         deck.select(1);
         QTRY_COMPARE(player->playbackState(), QMediaPlayer::StoppedState);
         QVERIFY(!output->isVisible());
@@ -1126,6 +1354,11 @@ class HypeTests : public QObject {
         const QPointF popupCenter =
             popupItem->mapToScene(QPointF(popupItem->width() / 2, popupItem->height() / 2));
         QVERIFY(QLineF(frameCenter, popupCenter).length() < 2);
+        const QSize previousSize = window->size();
+        window->resize(previousSize.width() + 120, previousSize.height() + 100);
+        QTRY_VERIFY(QLineF(frame->mapToScene(QPointF(frame->width() / 2, frame->height() / 2)),
+            popupItem->mapToScene(QPointF(popupItem->width() / 2, popupItem->height() / 2))).length() < 2);
+        window->resize(previousSize);
         const int pasteSlide = d.selected();
         QTest::keyClick(window, Qt::Key_PageDown);
         QCOMPARE(d.selected(), pasteSlide);
@@ -1530,6 +1763,81 @@ class HypeTests : public QObject {
         window->setProperty("allowClose", true);
         window->close();
     }
+    void exportRejectsIncompleteSlideStructure() {
+        QTemporaryDir tmp;
+        Deck d;
+        d.editSource("# One\n---\n# Two\n---\n# Three\n");
+        d.select(1);
+        d.editSlide("```rust\nfn main() {}");
+        QCOMPARE(d.count(), 3);
+        const QString output = tmp.filePath("existing.pdf");
+        write(output, "keep me");
+        QVERIFY(!d.exportPdf(output));
+        QVERIFY(!d.exportPptx(tmp.filePath("out.pptx")));
+        QVERIFY(!d.renderImages(tmp.filePath("rendered")));
+        QSignalSpy finished(&d, &Deck::exportFinished);
+        d.startExport("pdf", output);
+        QCOMPARE(finished.count(), 1);
+        QVERIFY(!finished.first().first().toBool());
+        QVERIFY(d.exportStatus().contains("Unclosed code fence"));
+        QFile file(output);
+        QVERIFY(file.open(QIODevice::ReadOnly));
+        QCOMPARE(file.readAll(), QByteArray("keep me"));
+        const auto snapshot = QJsonDocument(QJsonObject{{"source", d.source()}, {"path", tmp.filePath("p.md")}}).toJson();
+        write(tmp.filePath("snapshot.json"), QString::fromUtf8(snapshot));
+        Deck worker;
+        QVERIFY(!worker.loadExportSnapshot(tmp.filePath("snapshot.json")));
+        QCOMPARE(d.count(), 3);
+        d.editSlide("```rust\nfn main() {}\n```");
+        QVERIFY(d.exportPdf(tmp.filePath("complete.pdf")));
+        QPdfDocument pdf;
+        QCOMPARE(pdf.load(tmp.filePath("complete.pdf")), QPdfDocument::Error::None);
+        QCOMPARE(pdf.pageCount(), 3);
+    }
+    void saveCopyRollsBackOnFailure() {
+        QTemporaryDir tmp;
+        const QString original = tmp.filePath("original"), destination = tmp.filePath("copy");
+        QDir().mkpath(original + "/images");
+        QDir().mkpath(destination + "/images");
+        write(original + "/images/a.png", "first");
+        write(original + "/images/z.png", "last");
+        write(destination + "/images/z.png", "different");
+        Deck d;
+        QVERIFY(d.savePath(original + "/presentation.md"));
+        QVERIFY(!d.saveCopyPath(destination + "/presentation.md"));
+        QVERIFY(!QFile::exists(destination + "/images/a.png"));
+        QFile::remove(destination + "/images/z.png");
+        QDir().mkdir(destination + "/blocked.md");
+        QVERIFY(!d.saveCopyPath(destination + "/blocked.md"));
+        QVERIFY(!QFile::exists(destination + "/images/a.png"));
+        QVERIFY(!QFile::exists(destination + "/images/z.png"));
+        QCOMPARE(d.path(), original + "/presentation.md");
+        QVERIFY(d.saveCopyPath(destination + "/presentation.md"));
+        QVERIFY(QFile::exists(destination + "/images/a.png"));
+        QCOMPARE(d.path(), destination + "/presentation.md");
+    }
+    void mediaControlsPreserveCodeAndAltText() {
+        Deck d;
+        const QString examples = "```markdown\n![](fenced.png)\n```\n"
+            "    ![](indented.png)\n\n`![](inline.png)`\n<!-- ![](comment.png) -->\n";
+        d.editSlide(examples + "![fit alt=\"fit left right span loop\"](photo.png)");
+        d.setMediaMode("span");
+        QVERIFY(d.slideText().startsWith(examples));
+        QVERIFY(d.slideText().endsWith("![span alt=\"fit left right span loop\"](photo.png)"));
+        d.setMediaBackground("blur");
+        QVERIFY(d.slideText().contains("alt=\"fit left right span loop\""));
+        QVERIFY(d.slideText().startsWith(examples));
+        d.editSlide("![Sloop rigging](photo.png)");
+        d.setMediaMode("left");
+        QCOMPARE(parseMedia(d.slideText(), {}).side, QString("left"));
+        QVERIFY(parseMedia(d.slideText(), {}).error.isEmpty());
+        QVERIFY(d.slideText().contains("alt=\"Sloop rigging\""));
+        QVERIFY(!parseMedia("```sh\n# Comment\n```\n![](photo.png)", {}).span);
+        QVERIFY(parseMedia("# Headline\n![](photo.png)", {}).span);
+        const QString original = d.source();
+        d.setMediaMode("invalid");
+        QCOMPARE(d.source(), original);
+    }
     void mediaImportCollisionAndPortability() {
         QTemporaryDir tmp;
         QDir().mkdir(tmp.path() + "/deck");
@@ -1547,6 +1855,14 @@ class HypeTests : public QObject {
         d.importMedia(QUrl::fromLocalFile(tmp.path() + "/source/photo.png"));
         QCOMPARE(QDir(tmp.path() + "/deck/images").entryList(QDir::Files).size(), 2);
         QVERIFY(d.source().contains("photo-2.png"));
+        QVERIFY(slideProblems(d.slideSource(), d.baseDir()).isEmpty());
+        QCOMPARE(d.slideSource().count("![]("), 1);
+        QVERIFY(d.importMedia(QUrl::fromLocalFile(tmp.path() + "/source/photo.png"), true));
+        QCOMPARE(d.count(), 2);
+        for (int i = 0; i < d.count(); ++i) QVERIFY(slideProblems(d.slide(i), d.baseDir()).isEmpty());
+        write(tmp.path() + "/source/invalid.png", "not an image");
+        QVERIFY(!d.importMedia(QUrl::fromLocalFile(tmp.path() + "/source/invalid.png"), true));
+        QCOMPARE(d.count(), 2);
     }
     void fontSelection() {
         Deck d;
@@ -1580,6 +1896,30 @@ class HypeTests : public QObject {
         d.chooseTheme("nord");
         d.undo();
         QCOMPARE(d.source(), before);
+    }
+    void shutdownDrainsAndRejectsRenders() {
+        Deck deck;
+        QStringList slides;
+        for (int i = 0; i < 80; ++i)
+            slides << QString("# Shutdown %1\n").arg(i) + QString("A long line to lay out.\n").repeated(200);
+        deck.editSource(slides.join("\n---\n"));
+        Thumbnails provider(&deck);
+        std::vector<std::unique_ptr<QQuickImageResponse>> responses;
+        for (int i = 0; i < deck.count(); ++i)
+            responses.emplace_back(provider.requestImageResponse(deck.renderId(i),
+                i % 2 ? QSize(340, 192) : QSize(1920, 1080)));
+        QSignalSpy tailFinished(responses.back().get(), &QQuickImageResponse::finished);
+        provider.shutdown();
+        QCOMPARE(tailFinished.count(), 1);
+        // The queued tail completes without running a render. Every running
+        // response has finished before shutdown returns, while Qt is alive.
+        std::unique_ptr<QQuickTextureFactory> tail(responses.back()->textureFactory());
+        QVERIFY(!tail || tail->textureSize().isEmpty());
+        QVERIFY(provider.requestImage(deck.renderId(0), nullptr, QSize(1920, 1080)).isNull());
+        std::unique_ptr<QQuickImageResponse> late(provider.requestImageResponse(deck.renderId(0), QSize(340, 192)));
+        std::unique_ptr<QQuickTextureFactory> lateTexture(late->textureFactory());
+        QVERIFY(!lateTexture || lateTexture->textureSize().isEmpty());
+        provider.shutdown(); // Idempotent for aboutToQuit, scope guard, and destructor.
     }
     void trialRenderingPerformance() {
         if (!qEnvironmentVariableIsSet("HYPE_BENCHMARK"))

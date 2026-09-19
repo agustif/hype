@@ -88,6 +88,18 @@ class ExportTests(unittest.TestCase):
                 if name.endswith(('.xml', '.rels')):
                     ET.fromstring(archive.read(name))
 
+    def test_repeated_movie_is_embedded_once(self):
+        self.movie(codec='mpeg4')
+        self.export('![fit](demo.mp4)\n---\n![span muted](demo.mp4)\n')
+        with zipfile.ZipFile(self.output) as archive:
+            movies = [name for name in archive.namelist() if name.endswith('.mp4')]
+            self.assertEqual(len(movies), 1)
+            targets = []
+            for number in (1, 2):
+                rels = ET.fromstring(archive.read(f'ppt/slides/_rels/slide{number}.xml.rels'))
+                targets.append(next(rel.get('Target') for rel in rels if rel.get('Type').endswith('/video')))
+            self.assertEqual(targets[0], targets[1])
+
     def test_movie_embedded_with_playback_flags(self):
         self.movie()
         self.export('![loop muted](demo.mp4)\n')

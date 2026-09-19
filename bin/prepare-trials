@@ -7,7 +7,7 @@ WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
 cd "$ROOT"
 for YEAR in 2023 2024 2025; do
-  if test -f "trials/rails-world-$YEAR/presentation.md"; then
+  if test -e "trials/rails-world-$YEAR"; then
     echo "trials/rails-world-$YEAR already exists; refusing to overwrite edited trials." >&2
     exit 1
   fi
@@ -18,12 +18,36 @@ test -x "$PYTHON" && test -x "$KEYNOTE" || {
   echo 'Run python -m venv build/python, then build/python/bin/python -m pip install -r tools/requirements-trials.txt' >&2
   exit 1
 }
-SAL_USE_VCLPLUGIN=svp libreoffice "-env:UserInstallation=file://$WORK/lo" --headless --convert-to pptx --outdir "$WORK" "$PRESENTATIONS/2023/Rails World/Rails World 2024.key"
-"$KEYNOTE" unpack "$PRESENTATIONS/2023/Rails World/Rails World 2024.key" --output "$WORK/keynote"
-"$PYTHON" tools/import_trial.py "$WORK/Rails World 2024.pptx" trials/rails-world-2023 --year 2023
-"$PYTHON" tools/import_trial.py "$PRESENTATIONS/2024/Rails World 2024/Rails World 2024.pptx" trials/rails-world-2024 --year 2024
-"$PYTHON" tools/import_trial.py "$PRESENTATIONS/2025/Rails World 2025/Presentation/Rails World 2025.pptx" trials/rails-world-2025 --year 2025
-"$PYTHON" tools/refine_trials.py --keynote-unpacked "$WORK/keynote" --originals "$PRESENTATIONS"
-for YEAR in 2023 2024 2025; do
-  QT_QPA_PLATFORM=offscreen QT_QPA_PLATFORMTHEME=generic QT_STYLE_OVERRIDE=Fusion ./build/hype "trials/rails-world-$YEAR/presentation.md" --theme tokyo-night --save
+for TOOL in libreoffice magick; do
+  command -v "$TOOL" >/dev/null || { echo "Missing dependency: $TOOL" >&2; exit 1; }
 done
+test -x ./build/hype || { echo 'Run bin/build first.' >&2; exit 1; }
+for SOURCE in "$PRESENTATIONS/2023/Rails World/Rails World 2024.key" \
+  "$PRESENTATIONS/2024/Rails World 2024/Rails World 2024.pptx" \
+  "$PRESENTATIONS/2025/Rails World 2025/Presentation/Rails World 2025.pptx" \
+  "$PRESENTATIONS/2025/Rails World 2025/code.rb"; do
+  test -f "$SOURCE" || { echo "Missing source: $SOURCE" >&2; exit 1; }
+done
+# Stage under the destination filesystem so final renames are atomic.
+mkdir -p trials
+STAGING="$(mktemp -d "$ROOT/trials/.prepare-XXXXXX")"
+trap 'rm -rf "$WORK" "$STAGING"' EXIT
+SAL_USE_VCLPLUGIN=svp libreoffice "-env:UserInstallation=file://$WORK/lo" --headless --convert-to pptx --outdir "$WORK" "$PRESENTATIONS/2023/Rails World/Rails World 2024.key"
+test -f "$WORK/Rails World 2024.pptx" || { echo "LibreOffice conversion produced no PPTX" >&2; exit 1; }
+"$KEYNOTE" unpack "$PRESENTATIONS/2023/Rails World/Rails World 2024.key" --output "$WORK/keynote"
+"$PYTHON" tools/import_trial.py "$WORK/Rails World 2024.pptx" "$STAGING"/rails-world-2023 --year 2023
+"$PYTHON" tools/import_trial.py "$PRESENTATIONS/2024/Rails World 2024/Rails World 2024.pptx" "$STAGING"/rails-world-2024 --year 2024
+"$PYTHON" tools/import_trial.py "$PRESENTATIONS/2025/Rails World 2025/Presentation/Rails World 2025.pptx" "$STAGING"/rails-world-2025 --year 2025
+"$PYTHON" tools/refine_trials.py --root "$STAGING" --keynote-unpacked "$WORK/keynote" --originals "$PRESENTATIONS"
+for YEAR in 2023 2024 2025; do
+  XDG_CONFIG_HOME="$WORK/config" XDG_STATE_HOME="$WORK/state" QT_QPA_PLATFORM=offscreen QT_QPA_PLATFORMTHEME=generic QT_STYLE_OVERRIDE=Fusion ./build/hype "$STAGING/rails-world-$YEAR/presentation.md" --theme tokyo-night --save
+done
+PYTHONPATH="$ROOT/tools" "$PYTHON" - "$STAGING" "$ROOT/trials" <<'PYTHON'
+import sys
+from pathlib import Path
+from trial_io import publish_directories
+names = [f'rails-world-{year}' for year in (2023, 2024, 2025)]
+if any((Path(sys.argv[2]) / name).exists() for name in names):
+    raise SystemExit('A trial appeared during conversion; refusing to overwrite it.')
+publish_directories(sys.argv[1], sys.argv[2], names)
+PYTHON

@@ -5,6 +5,8 @@ This is a development migration tool, not a general PowerPoint importer.
 It preserves native text, extracts artwork, and records unsupported compositions.
 """
 import argparse
+import copy
+from trial_io import publish_directories
 import hashlib
 import json
 from pathlib import Path, PurePosixPath
@@ -22,9 +24,9 @@ R = '{' + NS['r'] + '}'
 
 def relationships(z, part):
     path = str(PurePosixPath(part).parent / '_rels' / (PurePosixPath(part).name + '.rels'))
-    if path not in z.namelist(): return {}
+    if path not in z.NameToInfo: return {}
     return {e.get('Id'): (e.get('Target') if e.get('TargetMode') == 'External' else
-             posixpath.normpath(str(PurePosixPath(part).parent / e.get('Target'))))
+             posixpath.normpath(str(PurePosixPath(part).parent / e.get('Target'))).lstrip('/'))
             for e in ET.fromstring(z.read(path))}
 
 def text_of(shape):
@@ -43,13 +45,13 @@ def box(shape):
     return tuple(int(v) for v in (off.get('x'), off.get('y'), size.get('cx'), size.get('cy')))
 
 def escape(text):
-    return re.sub(r'([\\`*_\[\]<>|])', r'\\\1', text).replace('\r', '')
+    text = re.sub(r'([\\`*_\[\]<>|])', r'\\\1', text).replace('\r', '')
+    return re.sub(r'(?m)^( {0,3})(#{1,6}(?= )|[-+](?= )|[0-9]+[.)](?= ))',
+                  lambda m: m[1] + re.sub(r'([#.+)\-])', r'\\\1', m[2]), text)
 
 def markdown_text(texts, year, number):
     values = [t['text'] for t in texts]
     if not values: return ''
-    # Remove duplicate text introduced by LibreOffice's Keynote conversion.
-    values = list(dict.fromkeys(values))
     if len(values) == 2 and all('\n' in v for v in values):
         rows = [v.splitlines() for v in values]
         if abs(texts[0]['box'][0] - texts[-1]['box'][0]) > 1000000:
@@ -77,13 +79,13 @@ def markdown_text(texts, year, number):
         return '\\\n'.join(escape(line) for line in lines)
     return '\n'.join('- ' + escape(line) for line in lines)
 
-def run(args):
+def convert(args):
     output = Path(args.output).resolve()
     if (output/'presentation.md').exists() and not args.overwrite:
         raise SystemExit('Trial already exists; choose another directory or --overwrite.')
     (output/'images').mkdir(parents=True, exist_ok=True)
     (output/'videos').mkdir(exist_ok=True)
-    entries, slides, extracted = [], [], {}
+    entries, slides = [], []
     with zipfile.ZipFile(args.source) as z:
         presentation = ET.fromstring(z.read('ppt/presentation.xml'))
         size = presentation.find('p:sldSz', NS)
@@ -98,12 +100,13 @@ def run(args):
                 if value: texts.append({'text': value, 'box': box(shape)})
             # Native text stays readable/themeable; ignore original font and colors.
             texts.sort(key=lambda t: (round(t['box'][1]/200000), t['box'][0]))
-            seen = set(); texts = [t for t in texts if not (t['text'] in seen or seen.add(t['text']))]
+            seen = set()
+            texts = [t for t in texts if not ((t['text'], t['box']) in seen or seen.add((t['text'], t['box'])))]
             for pic in root.findall('.//p:pic', NS):
                 blip = pic.find('.//a:blip', NS)
                 if blip is None: continue
                 target = rel.get(blip.get(R+'embed'))
-                if not target or target not in z.namelist():
+                if not target or target not in z.NameToInfo:
                     notes.append('External or missing picture'); continue
                 data = z.read(target); digest = hashlib.sha256(data).hexdigest()[:12]
                 extension = PurePosixPath(target).suffix.lower()
@@ -126,7 +129,7 @@ def run(args):
                         iw, ih = map(int,dims); c = picture['crop']
                         left,top,right,bottom = [int(c.get(k,0))/100000 for k in ('l','t','r','b')]
                         x,y = round(iw*left),round(ih*top); w,h = max(1,round(iw*(1-left-right))),max(1,round(ih*(1-top-bottom)))
-                        subprocess.run(['magick',str(picture['path']),'-crop',f'{w}x{h}+{x}+{y}','+repage',str(output/'images'/name)],check=True)
+                        subprocess.run(['magick',str(picture['path']),'-crop',f'{w}x{h}{x:+d}{y:+d}','+repage',str(output/'images'/name)],check=True)
                     x,y,w,h = picture['box']; full = w/sw > .9 and h/sh > .9
                     directive = 'span' if full else 'fit'
                     # A complex meme is represented as text + existing artwork, not falsely claimed pixel-equivalent.
@@ -137,15 +140,27 @@ def run(args):
                     body = (body+'\n\n' if body else '') + f'![{directive}]({name})'
                 else:
                     name=f'slide-{number:03}-artwork.png'
-                    command=['magick','-size','1920x1080','canvas:none']
+                    scale = min(1920 / sw, 1080 / sh)
+                    cw, ch = round(sw * scale), round(sh * scale)
+                    command=['magick','-size',f'{cw}x{ch}','canvas:none']
                     for pic in pictures:
-                        x,y,w,h=pic['box'];w=max(1,round(w/sw*1920));h=max(1,round(h/sh*1080));x=round(x/sw*1920);y=round(y/sh*1080)
-                        command += ['(',str(pic['path']),'-resize',f'{w}x{h}!','-repage',f'+{x}+{y}',')']
+                        x,y,w,h=pic['box'];w=max(1,round(w*scale));h=max(1,round(h*scale));x=round(x*scale);y=round(y*scale)
+                        command += ['(',str(pic['path'])]
+                        crop = pic['crop']
+                        if any(int(v) for v in crop.values()):
+                            iw, ih = map(int, subprocess.check_output(['magick', 'identify', '-format', '%w %h', str(pic['path'])], text=True).split())
+                            l, t, r, b = [int(crop.get(k, 0)) / 100000 for k in ('l', 't', 'r', 'b')]
+                            command += ['-crop', f'{max(1, round(iw*(1-l-r)))}x{max(1, round(ih*(1-t-b)))}{round(iw*l):+d}{round(ih*t):+d}', '+repage']
+                        command += ['-resize',f'{w}x{h}!','-repage',f'{x:+d}{y:+d}',')']
                     command += ['-layers','merge','+repage',str(output/'images'/name)]
                     subprocess.run(command,check=True,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
                     body=(body+'\n\n' if body else '')+f'![fit]({name})'
                     kind='composited-artwork-and-text' if texts else 'composited-artwork'
                     notes.append(f'{len(pictures)} picture layers flattened; check crops/group transforms')
+            if root.findall('.//p:grpSp', NS):
+                notes.append('Grouped shapes: inherited geometry is unsupported; compare with original')
+            if any(shape.find('./p:spPr/a:xfrm', NS) is None for shape in root.findall('.//p:sp', NS)):
+                notes.append('Layout/master placeholder geometry is unsupported; compare with original')
             if root.findall('.//p:graphicFrame', NS): notes.append('Native chart/table needs visual review')
             if not body:
                 body='<!-- Empty or unsupported source slide -->';notes.append('No text or picture found; inspect original')
@@ -161,6 +176,18 @@ def run(args):
     (output/'import-report.json').write_text(json.dumps(report,indent=2)+'\n')
     counts={kind:sum(e['kind']==kind for e in entries) for kind in sorted({e['kind'] for e in entries})}
     print(json.dumps({'year':args.year,'slides':len(slides),'representations':counts,'flagged':sum(bool(e['notes']) for e in entries)}))
+
+def run(args):
+    output = Path(args.output).resolve()
+    if output.exists() and not args.overwrite:
+        raise SystemExit('Trial already exists; choose another directory or --overwrite.')
+    output.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix='.hype-import-', dir=output.parent) as staging:
+        staged = copy.copy(args)
+        staged.output = str(Path(staging) / output.name)
+        convert(staged)
+        publish_directories(staging, output.parent, [output.name])
+
 
 if __name__=='__main__':
     parser=argparse.ArgumentParser(description=__doc__)

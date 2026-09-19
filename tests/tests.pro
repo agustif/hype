@@ -21,4 +21,5 @@ HEADERS += ../src/apptheme.h
 SOURCES += ../src/images.cpp
 HEADERS += ../src/images.h
 SOURCES += ../src/filedialog.cpp
+SOURCES += ../src/recovery.cpp
 HEADERS += ../src/filedialog.h

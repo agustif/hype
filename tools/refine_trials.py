@@ -4,6 +4,8 @@ import argparse
 import json
 from pathlib import Path
 import shutil
+import tempfile
+from trial_io import publish_directories
 import yaml
 
 
@@ -26,6 +28,10 @@ def replace_slide(folder, number, body, kind, note):
     text = path.read_text()
     # These imported trial sources have no --- inside code fences.
     slides = text.split('\n\n---\n\n')
+    year = folder.name.rsplit('-', 1)[-1]
+    expected = f'<!-- Source: Rails World {year}, slide {number} -->'
+    if not 1 <= number <= len(slides) or expected not in slides[number - 1]:
+        raise ValueError(f'{folder.name}: source slide {number} does not match the expected trial')
     prefix = slides[number-1].split('-->', 1)[0] + '-->'
     slides[number-1] = prefix + '\n\n' + body.strip()
     path.write_text('\n\n---\n\n'.join(slides).rstrip()+'\n')
@@ -37,7 +43,7 @@ def replace_slide(folder, number, body, kind, note):
     report_path.write_text(json.dumps(report, indent=2)+'\n')
 
 
-def run(root, unpacked, originals):
+def refine(root, unpacked, originals):
     if unpacked:
         document = objects(unpacked/'Index/Document.iwa.yaml')
         metadata = yaml.safe_load((unpacked/'Index/Metadata.iwa.yaml').read_text())
@@ -58,7 +64,7 @@ def run(root, unpacked, originals):
                     replace_slide(root/'rails-world-2023',number,f'![](<{name}>)','video',
                                   'Recovered from original Keynote movie reference; LibreOffice omitted this movie')
                 elif number == 35 and item['_pbtype'] == 'TSD.ImageArchive':
-                    info = files[item.get('originalSVGData', item['data'])['identifier']]
+                    info = files[(item.get('originalSVGData') or item['data'])['identifier']]
                     name = info.get('preferredFileName',info['fileName'])
                     shutil.copyfile(unpacked/'Data'/info['fileName'],root/'rails-world-2023'/'images'/name)
                     replace_slide(root/'rails-world-2023',number,f'![fit](<{name}>)','artwork',
@@ -67,7 +73,10 @@ def run(root, unpacked, originals):
     import re
     parts=(root/'rails-world-2024/presentation.md').read_text().split('\n\n---\n\n')
     for number in (32,33,34):
-        image=re.search(r'!\[[^\]]*\]\(([^)]+)\)',parts[number-1]).group(1)
+        match = re.search(r'!\[[^\]]*\]\(([^)]+)\)', parts[number-1])
+        if not match:
+            raise ValueError(f'Rails World 2024 slide {number}: expected artwork is missing')
+        image = match.group(1)
         body=f'![left]({image})\n\n# Are YOU suffering from server-phobia?'
         if number>=33: body+='\n\nDon’t worry. There’s a cure.'
         if number>=34: body+='\n\nIt’s called **LINUX**.'
@@ -87,7 +96,9 @@ def run(root, unpacked, originals):
 — Alan Kay’ish'''.strip(),'native-quote','Quote and attribution inferred from source')
     code = (originals/'2025/Rails World 2025/code.rb').read_text()
     start = code.index('class ProcessImportJob')
-    end = code.index('\n\n\n',start)
+    end = code.find('\n\n\n', start)
+    if end < 0:
+        end = len(code)
     replace_slide(root/'rails-world-2025',25,'```ruby\n'+code[start:end].strip()+'\n```','native-code',
                   'Replaced screenshot with matching ProcessImportJob from the deck’s code.rb')
     # Keep the external demo alongside the deck, but do not invent a source slide
@@ -96,6 +107,19 @@ def run(root, unpacked, originals):
     if demo.exists():
         shutil.copyfile(demo,root/'rails-world-2024/videos'/demo.name)
         (root/'rails-world-2024/video-demo.md').write_text('---\ntitle: Rails World 2024 — external demo\ntheme: tokyo-night\n---\n\n![](<RW Demo Final.mp4>)\n')
+
+def run(root, unpacked, originals):
+    names = [f'rails-world-{year}' for year in (2023, 2024, 2025)]
+    root = root.resolve()
+    # All mutations happen on copies. Missing source assets, code, or unexpected
+    # slide structure can never leave an existing trial half-refined.
+    with tempfile.TemporaryDirectory(prefix='.hype-refine-', dir=root.parent) as staging:
+        staging = Path(staging)
+        for name in names:
+            shutil.copytree(root / name, staging / name)
+        refine(staging, unpacked, originals)
+        publish_directories(staging, root, names)
+
 
 if __name__ == '__main__':
     p=argparse.ArgumentParser(description=__doc__)

@@ -32,7 +32,6 @@ entry.write_text(
     f"Icon={desktop_string(root / 'pkgbuild/hype.svg')}\n"
     "Terminal=false\n"
     "Categories=Office;Presentation;\n"
-    "MimeType=text/markdown;\n"
     "StartupNotify=true\n"
 )
 if shutil.which("update-desktop-database"):

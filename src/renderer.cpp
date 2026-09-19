@@ -1,6 +1,6 @@
 #include "renderer.h"
-#include "syntax.h"
 #include "images.h"
+#include "syntax.h"
 #include <QAbstractTextDocumentLayout>
 #include <QCache>
 #include <QCryptographicHash>
@@ -11,16 +11,18 @@
 #include <QFileInfo>
 #include <QImageReader>
 #include <QMutex>
-#include <QPointer>
-#include <QTimer>
-#include <QTemporaryFile>
 #include <QPainter>
+#include <QPointer>
 #include <QProcess>
 #include <QRegularExpression>
+#include <QSet>
+#include <QTemporaryFile>
 #include <QTextBlock>
 #include <QTextCursor>
 #include <QTextDocument>
 #include <QTextTable>
+#include <QTimer>
+#include <QWaitCondition>
 
 static QRegularExpression mediaRe(R"(!\[([^\]]*)\]\((?:<([^>]+)>|([^\s)]+))\))");
 namespace {
@@ -43,7 +45,7 @@ class ImageCache {
 static QString outsideCode(QString source, bool maskInline = true) {
     int position = 0, fenceLength = 0;
     QChar fence;
-    QRegularExpression marker("^ {0,3}(`{3,}|~{3,})(.*)$");
+    static const QRegularExpression marker("^ {0,3}(`{3,}|~{3,})(.*)$");
     while (position < source.size()) {
         int end = source.indexOf('\n', position);
         if (end < 0)
@@ -67,7 +69,7 @@ static QString outsideCode(QString source, bool maskInline = true) {
     }
     if (!maskInline)
         return source;
-    QRegularExpression inlineCode("(`+)([^`]|`(?!`))*?\\1");
+    static const QRegularExpression inlineCode("(`+)([^`]|`(?!`))*?\\1");
     auto matches = inlineCode.globalMatch(source);
     QVector<QPair<int, int>> ranges;
     while (matches.hasNext()) {
@@ -112,7 +114,40 @@ QString withMedia(const QString &source, const QString &reference) {
         updated += "\n" + reference + "\n";
     return updated;
 }
-Media parseMedia(const QString &source, const QString &base) {
+QString withMediaDirectives(const QString &source, const QStringList &remove,
+                            const QStringList &add) {
+    const QString marker = "\x01HYPE_MEDIA\x01";
+    const QString marked = withMedia(source, marker);
+    const int start = marked.indexOf(marker);
+    const int length = source.size() - marked.size() + marker.size();
+    if (start < 0 || length <= 0)
+        return source;
+    QString reference = source.mid(start, length);
+    const int end = reference.indexOf("](");
+    if (end < 2)
+        return source;
+    QString flags = reference.mid(2, end - 2).trimmed();
+    static const QRegularExpression tokens(R"re(([a-z]+)(?:=("(?:[^"\\]|\\.)*"|[^\s]+))?)re");
+    const auto first = tokens.match(flags);
+    const bool directives =
+        first.hasMatch() && first.capturedStart() == 0 &&
+        (QStringList{"fit", "span", "left", "right", "loop", "muted"}.contains(first.captured(1)) ||
+         !first.captured(2).isEmpty());
+    QStringList kept = add;
+    if (directives) {
+        auto matches = tokens.globalMatch(flags);
+        while (matches.hasNext()) {
+            const auto token = matches.next();
+            if (!remove.contains(token.captured(1)))
+                kept << token.captured();
+        }
+    } else if (!flags.isEmpty()) {
+        kept << "alt=\"" + flags.replace("\\", "\\\\").replace("\"", "\\\"") + "\"";
+    }
+    reference.replace(2, end - 2, kept.join(' '));
+    return withMedia(source, reference);
+}
+static Media readMedia(const QString &source, const QString &base) {
     Media result;
     result.text = withoutComments(source);
     auto m = mediaRe.match(outsideCode(result.text));
@@ -123,11 +158,11 @@ Media parseMedia(const QString &source, const QString &base) {
         QFileInfo(result.file).suffix().toLower());
     result.path = assetPath(base, result.file, result.video);
     result.text.remove(m.capturedStart(), m.capturedLength());
-    result.span =
-        !result.video &&
-        result.text.contains(QRegularExpression("^# ", QRegularExpression::MultilineOption));
+    result.span = !result.video &&
+                  outsideCode(result.text)
+                      .contains(QRegularExpression("^# ", QRegularExpression::MultilineOption));
     QString flags = m.captured(1).trimmed();
-    QRegularExpression tokens(R"re(([a-z]+)(?:=("(?:[^"\\]|\\.)*"|[^\s]+))?)re");
+    static const QRegularExpression tokens(R"re(([a-z]+)(?:=("(?:[^"\\]|\\.)*"|[^\s]+))?)re");
     auto first = tokens.match(flags);
     bool directives =
         first.hasMatch() && first.capturedStart() == 0 &&
@@ -195,24 +230,27 @@ Media parseMedia(const QString &source, const QString &base) {
     }
     return result;
 }
-QString ensurePoster(const QString &video, const QString &base) {
+Media parseMedia(const QString &source, const QString &base) {
+    // Parsing is pure: file existence and modification checks remain at call sites.
+    static thread_local QCache<QString, Media> cache(8 * 1024 * 1024);
+    const QString key = base + QChar(0) + source;
+    if (const auto result = cache.object(key))
+        return *result;
+    const auto result = readMedia(source, base);
+    cache.insert(key, new Media(result), qMax(1, int((key.size() + result.text.size()) * 2)));
+    return result;
+}
+static QString createPoster(const QString &video, const QString &base) {
     QFileInfo info(video);
     if (!info.exists())
         return {};
-    static thread_local QHash<QString, QString> hashes;
-    QString identity = info.absoluteFilePath() + QString::number(info.size()) +
-                       QString::number(info.lastModified().toMSecsSinceEpoch());
-    QString digest = hashes.value(identity);
-    if (digest.isEmpty()) {
-        QFile file(video);
-        if (!file.open(QIODevice::ReadOnly))
-            return {};
-        QCryptographicHash hash(QCryptographicHash::Sha256);
-        if (!hash.addData(&file))
-            return {};
-        digest = QString::fromLatin1(hash.result().toHex().left(16));
-        hashes[identity] = digest;
-    }
+    QFile file(video);
+    if (!file.open(QIODevice::ReadOnly))
+        return {};
+    QCryptographicHash hash(QCryptographicHash::Sha256);
+    if (!hash.addData(&file))
+        return {};
+    const QString digest = QString::fromLatin1(hash.result().toHex().left(16));
     QString path = base + "/images/.hype-poster-" + digest + ".jpg";
     if (QFile::exists(path))
         return path;
@@ -232,6 +270,32 @@ QString ensurePoster(const QString &video, const QString &base) {
     if (!QFile::exists(path) && !QFile::rename(poster.fileName(), path) && !QFile::exists(path))
         return {};
     return path;
+}
+QString ensurePoster(const QString &video, const QString &base) {
+    static QMutex mutex;
+    static QWaitCondition ready;
+    static QSet<QString> pending;
+    static QCache<QString, QString> cache(1024);
+    const QFileInfo file(video);
+    const QString key = base + QChar(0) + video + ':' + QString::number(file.size()) + ':' +
+                        QString::number(file.lastModified().toMSecsSinceEpoch());
+    {
+        QMutexLocker lock(&mutex);
+        while (pending.contains(key))
+            ready.wait(&mutex);
+        if (auto path = cache.object(key); path && QFileInfo::exists(*path))
+            return *path;
+        pending.insert(key);
+    }
+    const QString result = createPoster(video, base);
+    {
+        QMutexLocker lock(&mutex);
+        if (!result.isEmpty())
+            cache.insert(key, new QString(result));
+        pending.remove(key);
+        ready.wakeAll();
+    }
+    return result;
 }
 QStringList slideProblems(const QString &source, const QString &base) {
     QStringList errors;
@@ -353,8 +417,8 @@ static QString preserveLineBreaks(QString markdown) {
     }
     return lines.join('\n');
 }
-void layoutSlideText(QTextDocument &doc, const QString &markdown, const QVariantMap &palette,
-                         qreal fontSize, qreal width, bool centered, bool code) {
+static void sizeSlideText(QTextDocument &doc, const QVariantMap &palette, qreal fontSize,
+                          qreal width, bool centered, bool code) {
     QFont font(code ? QString("JetBrains Mono")
                     : palette.value("font", "JetBrains Mono").toString());
     font.setPixelSize(qRound(fontSize));
@@ -368,7 +432,6 @@ void layoutSlideText(QTextDocument &doc, const QString &markdown, const QVariant
     doc.setDefaultStyleSheet(
         QString("body { color: %1; } a { color: %2; } pre { white-space: pre; }")
             .arg(palette["foreground"].toString(), palette["accent"].toString()));
-    doc.setMarkdown(preserveLineBreaks(markdown), QTextDocument::MarkdownDialectGitHub);
     for (QTextBlock block = doc.begin(); block.isValid(); block = block.next()) {
         QTextCursor cursor(block);
         QTextBlockFormat bf = block.blockFormat();
@@ -423,6 +486,11 @@ void layoutSlideText(QTextDocument &doc, const QString &markdown, const QVariant
             table->setFormat(fmt);
         }
     doc.setTextWidth(width);
+}
+void layoutSlideText(QTextDocument &doc, const QString &markdown, const QVariantMap &palette,
+                     qreal fontSize, qreal width, bool centered, bool code) {
+    doc.setMarkdown(preserveLineBreaks(markdown), QTextDocument::MarkdownDialectGitHub);
+    sizeSlideText(doc, palette, fontSize, width, centered, code);
 }
 QRectF mediaRect(const Media &media) {
     if (!media.side.isEmpty())
@@ -524,7 +592,9 @@ void paintSlide(QPainter *p, const QRectF &target, const QString &source, const 
             p->restore();
         } else if (!overlayOnly && !backgroundOnly) {
             p->setPen(QColor(palette["accent"].toString()));
-            p->setFont(QFont("sans", 24));
+            QFont diagnostic("sans");
+            diagnostic.setPixelSize(32);
+            p->setFont(diagnostic);
             p->drawText(rect, Qt::AlignCenter, "Missing media\n" + media.file);
         }
         if (!media.video || media.span) {
@@ -564,13 +634,13 @@ void paintSlide(QPainter *p, const QRectF &target, const QString &source, const 
             low = high;
         for (int iteration = 0; !fits && iteration < 9; ++iteration) {
             qreal size = (low + high) / 2;
-            layoutSlideText(doc, text, palette, size, area.width(), centered, code);
+            sizeSlideText(doc, palette, size, area.width(), centered, code);
             if (doc.size().height() <= area.height() && doc.idealWidth() <= area.width() + 1)
                 low = size;
             else
                 high = size;
         }
-        layoutSlideText(doc, text, palette, low, area.width(), centered, code);
+        sizeSlideText(doc, palette, low, area.width(), centered, code);
         highlightCode(doc, palette);
         if (low < 24 && warning)
             *warning = "Text fits below 24px on a 1080p slide";
@@ -584,7 +654,9 @@ void paintSlide(QPainter *p, const QRectF &target, const QString &source, const 
     if (!problems.isEmpty()) {
         p->setPen(Qt::white);
         p->fillRect(QRectF(0, 1000, 1920, 80), QColor("#9b3030"));
-        p->setFont(QFont("sans", 16));
+        QFont diagnostic("sans");
+        diagnostic.setPixelSize(21);
+        p->setFont(diagnostic);
         p->drawText(QRectF(30, 1005, 1860, 70), Qt::AlignVCenter, problems.join(" · "));
         if (warning)
             *warning = problems.join("; ");
@@ -666,24 +738,31 @@ Thumbnails::Thumbnails(Deck *deck) {
     m_thumbnails.setMaxThreadCount(2);
     m_previews.setMaxThreadCount(2);
     m_cached.setMaxThreadCount(1);
+    m_videos.setMaxThreadCount(2);
     auto timer = new QTimer(this);
     timer->setInterval(60);
     timer->setSingleShot(true);
     connect(deck, &Deck::changed, this, [this, timer] {
+        if (m_stopping->load())
+            return;
         ++*m_generation;
         timer->start();
     });
     connect(timer, &QTimer::timeout, this, [this, deck = QPointer<Deck>(deck)] {
-        if (!deck) return;
+        QMutexLocker submissions(&m_submissions);
+        if (!deck || m_stopping->load())
+            return;
         const auto generation = m_generation;
         const auto current = generation->load();
         for (int offset : {1, -1, 2, -2, 3, -3}) {
             const int index = deck->selected() + offset;
-            if (index < 0 || index >= deck->count()) continue;
+            if (index < 0 || index >= deck->count())
+                continue;
             // Do not start video decoding or animation playback speculatively.
             const auto media = parseMedia(deck->slide(index), deck->baseDir());
             QImageReader reader(media.path);
-            if (media.video || (!media.path.isEmpty() && reader.supportsAnimation() && reader.imageCount() > 1)) continue;
+            if (media.video || (!media.path.isEmpty() && reader.supportsAnimation() && reader.imageCount() > 1))
+                continue;
             const QString id = deck->renderId(index);
             m_previews.start([generation, current, id] {
                 if (generation->load() == current)
@@ -693,25 +772,59 @@ Thumbnails::Thumbnails(Deck *deck) {
     });
     timer->start();
 }
-Thumbnails::~Thumbnails() {
-    ++*m_generation;
+Thumbnails::~Thumbnails() { shutdown(); }
+void Thumbnails::shutdown() {
+    {
+        // Fence submissions before draining. Qt Quick can retain this provider
+        // after the engine dies; no later request may start touching Qt fonts.
+        QMutexLocker submissions(&m_submissions);
+        m_stopping->store(true);
+        ++*m_generation;
+    }
     m_thumbnails.waitForDone();
     m_previews.waitForDone();
     m_cached.waitForDone();
+    m_videos.waitForDone();
 }
 QImage Thumbnails::requestImage(const QString &id, QSize *size, const QSize &requested) {
-    return renderedSlide(id, size, requested);
+    // Synchronous entry point used by rendering tests, not the QML engine.
+    QMutexLocker submissions(&m_submissions);
+    return m_stopping->load() ? QImage() : renderedSlide(id, size, requested);
 }
 QQuickImageResponse *Thumbnails::requestImageResponse(const QString &id, const QSize &requested) {
+    QMutexLocker submissions(&m_submissions);
     auto response = new SlideResponse;
+    const auto stopping = m_stopping;
+    if (stopping->load()) {
+        // Finished responses are valid even before the loader connects its
+        // signal handler; QQuickImageResponse records its finished state.
+        response->complete({});
+        return response;
+    }
     const QSize dimensions = requested.isValid() ? requested : QSize(320, 180);
     const QImage cached = slideCache(dimensions).get(slideCacheKey(id, dimensions));
     if (!cached.isNull()) {
         // A ready image must not wait behind unrelated decoding or prefetches.
-        m_cached.start([response, cached] { response->complete(cached); });
+        m_cached.start([response, cached, stopping] {
+            response->complete(stopping->load() ? QImage() : cached);
+        });
         return response;
     }
-    auto &pool = requested.isValid() && requested.width() <= 400 ? m_thumbnails : m_previews;
-    pool.start([response, id, requested] { response->render(id, requested); }, 1);
+    QByteArray bytes =
+        QByteArray::fromBase64(id.section('/', 0, 0).toLatin1(), QByteArray::Base64UrlEncoding);
+    QDataStream stream(bytes);
+    QString source, base;
+    stream >> source >> base;
+    // Video poster decoding cannot occupy the workers needed for ordinary slides.
+    const bool video = parseMedia(source, base).video;
+    auto &pool = video ? m_videos : dimensions.width() <= 400 ? m_thumbnails : m_previews;
+    pool.start(
+        [response, id, requested, stopping] {
+            if (stopping->load())
+                response->complete({});
+            else
+                response->render(id, requested);
+        },
+        1);
     return response;
 }

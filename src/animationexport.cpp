@@ -6,7 +6,7 @@
 #include <QImageReader>
 #include <QPainter>
 #include <QProcess>
-#include <QTemporaryDir>
+#include <QScopeGuard>
 #include <memory>
 #include <webp/demux.h>
 
@@ -41,11 +41,6 @@ bool exportAnimation(const QString &source, const QString &base, const QVariantM
         *repeats = media.loop || info.loop_count == 0 ? -1 : int(info.loop_count);
     }
     int previousTimestamp = 0;
-    QTemporaryDir temp(QFileInfo(output).absolutePath() + "/animation-XXXXXX");
-    if (!temp.isValid()) {
-        *error = "Cannot create temporary animation directory";
-        return false;
-    }
     const QSize size(width, width * 9 / 16);
     QImage background(size, QImage::Format_RGB32);
     QImage overlay(size, QImage::Format_ARGB32_Premultiplied);
@@ -57,10 +52,70 @@ bool exportAnimation(const QString &source, const QString &base, const QVariantM
         paintSlide(&op, overlay.rect(), source, base, palette, nullptr, true);
     }
     const QRectF rect = mediaRect(media);
-    QByteArray concat("ffconcat version 1.0\n");
-    qint64 duration = 0;
+    // Feed a bounded raw-frame pipe: no directory of full-size PNGs and no
+    // complete animation in memory. Quantize cumulative timestamps to the same
+    // 60 Hz output clock used by PowerPoint exports, avoiding per-frame drift.
+    QProcess encoder;
+    encoder.start("ffmpeg", {"-v",
+                             "error",
+                             "-nostdin",
+                             "-y",
+                             "-f",
+                             "rawvideo",
+                             "-pixel_format",
+                             "rgba",
+                             "-video_size",
+                             QString("%1x%2").arg(size.width()).arg(size.height()),
+                             "-framerate",
+                             "60",
+                             "-i",
+                             "pipe:0",
+                             "-an",
+                             "-c:v",
+                             "libx264",
+                             "-threads",
+                             "2",
+                             "-preset",
+                             "fast",
+                             "-crf",
+                             "18",
+                             "-pix_fmt",
+                             "yuv420p",
+                             "-movflags",
+                             "+faststart",
+                             QFileInfo(output).absoluteFilePath()});
+    if (!encoder.waitForStarted()) {
+        *error = "Cannot start ffmpeg for animation conversion: " + encoder.errorString();
+        return false;
+    }
+    const auto cleanup = qScopeGuard([&] {
+        if (encoder.state() != QProcess::NotRunning) {
+            encoder.kill();
+            encoder.waitForFinished();
+        }
+    });
+    QByteArray diagnostics;
+    auto writeFrame = [&](const QImage &frame) {
+        const char *bytes = reinterpret_cast<const char *>(frame.constBits());
+        qint64 remaining = frame.sizeInBytes();
+        while (remaining > 0) {
+            const qint64 count = encoder.write(bytes, qMin(remaining, qint64(256 * 1024)));
+            if (count < 0)
+                return false;
+            bytes += count;
+            remaining -= count;
+            while (encoder.bytesToWrite() > 0) {
+                if (!encoder.waitForBytesWritten(30000))
+                    return false;
+                diagnostics = (diagnostics + encoder.readAllStandardError()).right(8192);
+            }
+        }
+        return true;
+    };
+    qint64 duration = 0, writtenFrames = 0;
     for (int i = 0; i < frames; ++i) {
-        if (progress) progress(0.5 * i / frames);
+        if (progress)
+            progress(double(i) / frames);
         QImage frame;
         int delay;
         if (webp) {
@@ -99,75 +154,29 @@ bool exportAnimation(const QString &source, const QString &base, const QVariantM
             p.restore();
             p.drawImage(0, 0, overlay);
         }
-        const QString name = QString("frame-%1.png").arg(i);
-        if (!slide.save(temp.filePath(name))) {
-            *error = "Cannot save animation frame";
-            return false;
-        }
         duration += delay;
-        concat += "file '" + name.toUtf8() + "'\noption framerate 1000\nduration " +
-                  QByteArray::number(delay / 1000.0, 'f', 3) + "\n";
+        const qint64 targetFrames =
+            qMax<qint64>(i == frames - 1 ? 1 : 0, qRound64(duration * 60.0 / 1000));
+        const QImage pixels = slide.convertToFormat(QImage::Format_RGBA8888);
+        while (writtenFrames < targetFrames) {
+            if (!writeFrame(pixels)) {
+                *error = "Animation conversion failed: " +
+                         QString::fromUtf8(diagnostics + encoder.readAllStandardError()).trimmed();
+                return false;
+            }
+            ++writtenFrames;
+        }
     }
-    // The terminal duplicate preserves the final frame hold in the concat input.
-    concat += "file 'frame-" + QByteArray::number(frames - 1) + ".png'\noption framerate 1000\n";
-    QFile list(temp.filePath("frames.ffconcat"));
-    if (!list.open(QIODevice::WriteOnly) || list.write(concat) != concat.size()) {
-        *error = "Cannot write animation frame timings";
-        return false;
-    }
-    list.close();
-    QProcess encoder;
-    encoder.setWorkingDirectory(temp.path());
-    encoder.start("ffmpeg", {"-v",
-                             "error",
-                             "-nostdin",
-                             "-y",
-                             "-f",
-                             "concat",
-                             "-safe",
-                             "0",
-                             "-i",
-                             "frames.ffconcat",
-                             "-an",
-                             "-c:v",
-                             "libx264",
-                             "-threads", "2",
-                             "-progress", "pipe:1",
-                             "-preset",
-                             "fast",
-                             "-crf",
-                             "18",
-                             "-pix_fmt",
-                             "yuv420p",
-                             "-vf",
-                             "fps=60",
-                             "-fps_mode",
-                             "cfr",
-                             "-t",
-                             QString::number(duration / 1000.0, 'f', 3),
-                             "-movflags",
-                             "+faststart",
-                             QFileInfo(output).absoluteFilePath()});
-    if (!encoder.waitForStarted()) {
-        *error = "Cannot start ffmpeg for animation conversion: " + encoder.errorString();
-        return false;
-    }
-    QByteArray pending;
+    encoder.closeWriteChannel();
     do {
         encoder.waitForFinished(200);
-        pending += encoder.readAllStandardOutput();
-        int end;
-        while ((end = pending.indexOf('\n')) >= 0) {
-            const QByteArray line = pending.left(end);
-            pending.remove(0, end + 1);
-            if (progress && duration > 0 && line.startsWith("out_time_us="))
-                progress(0.5 + 0.5 * qBound(0.0, line.mid(12).toDouble() / 1000 / duration, 1.0));
-        }
+        diagnostics = (diagnostics + encoder.readAllStandardError()).right(8192);
     } while (encoder.state() != QProcess::NotRunning);
     if (encoder.exitStatus() != QProcess::NormalExit || encoder.exitCode() != 0) {
-        *error = "Animation conversion failed: " +
-                 QString::fromUtf8(encoder.readAllStandardError()).trimmed();
+        *error = "Animation conversion failed: " + QString::fromUtf8(diagnostics).trimmed();
         return false;
     }
+    if (progress)
+        progress(1);
     return true;
 }

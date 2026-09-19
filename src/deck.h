@@ -1,8 +1,10 @@
 #pragma once
 #include <QAbstractListModel>
 #include <QColor>
+#include <QElapsedTimer>
 #include <QFileSystemWatcher>
 #include <QImage>
+#include <QTimer>
 #include <QUrl>
 #include <QVariantMap>
 class QProcess;
@@ -61,7 +63,7 @@ class Deck : public QAbstractListModel {
     bool loadExportSnapshot(const QString &path);
     Q_INVOKABLE void startExport(const QString &format, const QString &path);
     Q_INVOKABLE void cancelExport();
-    enum { TitleRole = Qt::UserRole + 1, NumberRole };
+    enum { NumberRole = Qt::UserRole + 1 };
     int rowCount(const QModelIndex &parent = {}) const override;
     QVariant data(const QModelIndex &, int role) const override;
     QHash<int, QByteArray> roleNames() const override;
@@ -96,6 +98,11 @@ class Deck : public QAbstractListModel {
     bool loadPath(const QString &path);
     bool reopenLastPresentation();
     bool savePath(const QString &path);
+    bool saveCopyPath(const QString &path);
+    void enableAutosave(const QString &recoveryDirectory = {});
+    Q_INVOKABLE bool flushAutosave();
+    Q_INVOKABLE QVariantList recoveryVersions() const;
+    Q_INVOKABLE bool restoreVersion(const QString &name);
     bool exportPdf(const QString &path);
     bool exportPptx(const QString &path);
     bool renderImages(const QString &directory, int width = 1920, bool convertAnimations = false);
@@ -119,7 +126,7 @@ class Deck : public QAbstractListModel {
     Q_INVOKABLE void saveAs();
     Q_INVOKABLE void newDeck();
     Q_INVOKABLE void importDialog();
-    Q_INVOKABLE void importMedia(const QUrl &url);
+    Q_INVOKABLE bool importMedia(const QUrl &url, bool newSlide = false);
     Q_INVOKABLE bool pasteMedia();
     Q_INVOKABLE QString savePastedMedia(const QString &name);
     Q_INVOKABLE void cancelPaste();
@@ -147,7 +154,15 @@ class Deck : public QAbstractListModel {
     };
     mutable QString m_paletteHeader, m_mediaSource, m_mediaBase;
     mutable QString m_sizeSource, m_sizeBase;
-    mutable qint64 m_totalBytes = -1;
+    mutable qint64 m_totalBytes = -1, m_assetBytes = 0;
+    mutable QStringList m_sizeFiles;
+    mutable QElapsedTimer m_sizeClock;
+    struct RenderIdentity {
+        QString source, base, id;
+        QVariantMap palette;
+        QElapsedTimer clock;
+    };
+    mutable QHash<int, RenderIdentity> m_renderIds;
     mutable QVariantMap m_mediaCache;
     mutable QVariantMap m_paletteCache;
     QString m_source, m_saved, m_path, m_status;
@@ -157,6 +172,9 @@ class Deck : public QAbstractListModel {
     QMap<QString, QString> m_themes;
     QFileSystemWatcher m_watcher;
     bool m_externalChange = false;
+    QString m_recoveryDirectory, m_checkpointSource, m_checkpointPath;
+    QTimer m_autosaveTimer, m_autosaveDeadline;
+    bool m_recovering = false;
     bool m_compressingImage = false;
     quint64 m_pasteGeneration = 0;
     bool m_exporting = false, m_exportFailed = false;
@@ -176,6 +194,12 @@ class Deck : public QAbstractListModel {
     void replaceHeader(const QString &header);
     void replaceSlides(const QStringList &slides, int selected, int anchor = -1);
     bool confirmDiscard();
+    bool validateStructure(const QString &operation);
+    bool checkpoint();
+    void recoverDraft();
+    void retireDraft();
+    QString recoveryFolder() const;
+    bool restoreSnapshot(const QByteArray &bytes, bool opening);
     void discoverThemes();
     void watch();
 };
