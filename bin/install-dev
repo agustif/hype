@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Register this checkout in the current user's application launcher."""
+import hashlib
 import os
 from pathlib import Path
 import shutil
@@ -22,6 +23,16 @@ root = Path(__file__).resolve().parent.parent
 data_home = Path(os.environ.get("XDG_DATA_HOME") or Path.home() / ".local/share")
 applications = data_home / "applications"
 applications.mkdir(parents=True, exist_ok=True)
+# Launchers cache icons by path, so a changed icon at the same path keeps showing the old
+# one. Install a copy named after its contents and point the entry at that.
+source_icon = root / "pkgbuild/hype.svg"
+icons = data_home / "icons"
+icons.mkdir(parents=True, exist_ok=True)
+icon = icons / f"hype-dev-{hashlib.sha1(source_icon.read_bytes()).hexdigest()[:8]}.svg"
+for stale in icons.glob("hype-dev-*.svg"):
+    if stale != icon:
+        stale.unlink()
+shutil.copyfile(source_icon, icon)
 entry = applications / "hype-dev.desktop"
 entry.write_text(
     "[Desktop Entry]\n"
@@ -29,7 +40,7 @@ entry.write_text(
     "Name=Hype (Development)\n"
     "Comment=Build and launch Hype from the development checkout\n"
     f"Exec={exec_argument(root / 'bin/dev')} %f\n"
-    f"Icon={desktop_string(root / 'pkgbuild/hype.svg')}\n"
+    f"Icon={desktop_string(icon)}\n"
     "Terminal=false\n"
     "Categories=Office;Presentation;\n"
     "StartupNotify=true\n"
