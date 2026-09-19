@@ -132,9 +132,23 @@ class ExportTests(unittest.TestCase):
         self.export('![fit](demo.mp4)\n')
         original = self.output.read_bytes()
         self.movie(codec='mpeg4')
-        result = self.export('![](demo.mp4)\n', success=False)
-        self.assertIn('H.264', result.stderr)
-        self.assertEqual(self.output.read_bytes(), original)
+        source = (self.root / 'videos/demo.mp4').read_bytes()
+        self.export('![](demo.mp4)\n')
+        self.extracted_movie(size=(320, 180))
+        self.assertEqual((self.root / 'videos/demo.mp4').read_bytes(), source)
+
+    def test_webm_converts_video_and_audio_without_changing_original(self):
+        source = self.root / 'videos/demo.webm'
+        subprocess.run(['ffmpeg', '-v', 'error', '-f', 'lavfi', '-i', 'color=c=blue:s=320x180:d=0.2',
+                        '-f', 'lavfi', '-i', 'sine=frequency=440:duration=0.2',
+                        '-c:v', 'libvpx-vp9', '-c:a', 'libopus', str(source)], check=True)
+        original = source.read_bytes()
+        self.export('![span](demo.webm)\n')
+        movie, _, _ = self.extracted_movie(size=(320, 180), audio=True)
+        info = json.loads(subprocess.check_output(['ffprobe', '-v', 'error', '-show_streams',
+                                                  '-of', 'json', str(movie)]))
+        self.assertEqual([s['codec_name'] for s in info['streams']], ['h264', 'aac'])
+        self.assertEqual(source.read_bytes(), original)
 
     def animation(self, extension):
         source = Path(__file__).parent / 'fixtures' / f'animated.{extension}'
@@ -142,7 +156,7 @@ class ExportTests(unittest.TestCase):
         shutil.copy2(source, target)
         return target
 
-    def extracted_movie(self):
+    def extracted_movie(self, size=(3840, 2160), audio=False):
         with zipfile.ZipFile(self.output) as archive:
             movies = [name for name in archive.namelist() if name.endswith('.mp4')]
             self.assertEqual(len(movies), 1)
@@ -154,8 +168,8 @@ class ExportTests(unittest.TestCase):
         info = json.loads(probe.stdout)
         self.assertEqual(info['streams'][0]['codec_name'], 'h264')
         self.assertEqual(info['streams'][0]['pix_fmt'], 'yuv420p')
-        self.assertEqual((info['streams'][0]['width'], info['streams'][0]['height']), (3840, 2160))
-        self.assertEqual(len(info['streams']), 1)
+        self.assertEqual((info['streams'][0]['width'], info['streams'][0]['height']), size)
+        self.assertEqual(len(info['streams']), 2 if audio else 1)
         return target, xml, info
 
     def movie_pixel(self, movie, time, x=96, y=54):
@@ -191,10 +205,10 @@ class ExportTests(unittest.TestCase):
         self.export('![left background=#123456 autoplay=false](demo.gif)\n\n# Caption\n')
         movie, xml, info = self.extracted_movie()
         self.assertAlmostEqual(float(info['format']['duration']), 0.68, delta=0.04)
-        self.assert_color(self.movie_pixel(movie, 0.05, 50, 54), (255, 0, 0))
-        self.assert_color(self.movie_pixel(movie, 0.25, 50, 54), (0, 0, 255))
-        self.assert_color(self.movie_pixel(movie, 0.55, 50, 54), (0, 128, 0))
-        self.assert_color(self.movie_pixel(movie, 0.25, 180, 10), (18, 52, 86))
+        self.assert_color(self.movie_pixel(movie, 0.05, 50, 54), (191, 0, 0))
+        self.assert_color(self.movie_pixel(movie, 0.25, 50, 54), (0, 0, 191))
+        self.assert_color(self.movie_pixel(movie, 0.55, 50, 54), (0, 96, 0))
+        self.assert_color(self.movie_pixel(movie, 0.25, 180, 10), (13, 39, 64))
         timing = xml.find('.//p:video/p:cMediaNode/p:cTn', NS)
         self.assertEqual(timing.get('repeatCount'), '3000')
         self.assertEqual(timing.find('p:stCondLst/p:cond', NS).get('delay'), 'indefinite')

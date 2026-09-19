@@ -2,14 +2,18 @@
 #include "animationexport.h"
 #include "pptx.h"
 #include "renderer.h"
+#include "images.h"
 #include <QApplication>
 #include <QClipboard>
 #include <QCryptographicHash>
 #include <QDataStream>
+#include <QDateTime>
 #include <QDir>
-#include <QFileDialog>
+#include "filedialog.h"
 #include <QFileInfo>
 #include <QFontDatabase>
+#include <QFutureWatcher>
+#include <QtConcurrentRun>
 #include <QImageReader>
 #include <QImageWriter>
 #include <QJsonArray>
@@ -27,6 +31,11 @@
 #include <QSettings>
 #include <QStandardPaths>
 #include <QTemporaryDir>
+#include <memory>
+#include <csignal>
+#include <cstdio>
+#include <cerrno>
+#include <cstring>
 
 ParsedDeck parseDeck(const QString &source) {
     ParsedDeck result;
@@ -116,7 +125,8 @@ QString setScalar(QString header, const QString &key, const QString &value) {
     }
     return header;
 }
-Deck::Deck(QObject *parent) : QAbstractListModel(parent) {
+Deck::Deck(QObject *parent, const QString &exportProgram) : QAbstractListModel(parent),
+    m_exportProgram(exportProgram.isEmpty() ? QCoreApplication::applicationFilePath() : exportProgram) {
     discoverThemes();
     m_source = "---\ntitle: Untitled\ntheme: tokyo-night\n---\n\n# Your next idea\n";
     m_parsed = parseDeck(m_source);
@@ -186,9 +196,15 @@ QString Deck::title() const {
 }
 void Deck::setStatus(const QString &s) {
     m_status = s;
+    if (!m_exporting && !m_exportStatus.isEmpty()) {
+        m_exportStatus.clear();
+        m_exportFailed = false;
+        emit exportChanged();
+    }
     emit statusChanged();
 }
-void Deck::apply(const QString &source, int selected, bool history, int anchor) {
+void Deck::apply(const QString &source, int selected, bool history, int anchor,
+                 const ParsedDeck *structure) {
     if (source == m_source) {
         m_anchor = qBound(0, anchor < 0 ? selected : anchor, count() - 1);
         m_selected = qBound(0, selected, count() - 1);
@@ -196,12 +212,24 @@ void Deck::apply(const QString &source, int selected, bool history, int anchor) 
         return;
     }
     if (history) {
-        m_undo.append({m_source, m_selected, m_anchor});
+        m_undo.append({m_source, m_selected, m_anchor, m_parsed});
         if (m_undo.size() > 200)
             m_undo.removeFirst();
         m_redo.clear();
     }
-    auto parsed = parseDeck(source);
+    auto parsed = structure ? *structure : parseDeck(source);
+    if (structure) {
+        parsed.error.clear();
+        for (const auto &slide : parsed.slides) {
+            // A slide body cannot contain front matter. Prefix a plain line so
+            // a leading --- is interpreted as a slide break instead.
+            const auto body = parseDeck("Slide\n" + slide.source);
+            if (!body.error.isEmpty()) {
+                parsed.error = body.error;
+                break;
+            }
+        }
+    }
     const bool reset = parsed.slides.size() != count();
     QVector<int> modified;
     if (!reset)
@@ -281,13 +309,34 @@ void Deck::editSlide(const QString &s) {
     }
     QString edited = m_source;
     edited.replace(range.start, range.end - range.start, body);
-    apply(edited, m_selected);
+    // Reparse only the edited slide. An unfinished fence must never extend this
+    // editor's replacement range into the following slides on the next keystroke.
+    const QString prefix = "Slide\n";
+    auto fragment = parseDeck(prefix + body);
+    auto parsed = m_parsed;
+    const int shift = body.size() - (range.end - range.start);
+    for (int i = m_selected + 1; i < parsed.slides.size(); ++i) {
+        parsed.slides[i].start += shift;
+        parsed.slides[i].end += shift;
+    }
+    parsed.slides.removeAt(m_selected);
+    for (int i = 0; i < fragment.slides.size(); ++i) {
+        auto slide = fragment.slides[i];
+        const int start = qMax(0, slide.start - int(prefix.size()));
+        const int end = slide.end - prefix.size();
+        parsed.slides.insert(m_selected + i,
+                             {body.mid(start, end - start), range.start + start, range.start + end});
+    }
+    apply(edited, m_selected, true, -1, &parsed);
 }
 void Deck::replaceSlides(const QStringList &slides, int selected, int anchor) {
     QString out = m_parsed.header;
+    ParsedDeck parsed;
+    parsed.header = m_parsed.header;
     for (int i = 0; i < slides.size(); ++i) {
         if (i)
             out += "---\n";
+        const int start = out.size();
         const QString body = withoutSlidePadding(slides[i]);
         if (!body.isEmpty()) {
             if (!out.isEmpty())
@@ -296,8 +345,19 @@ void Deck::replaceSlides(const QStringList &slides, int selected, int anchor) {
         }
         if (i < slides.size() - 1 || body.isEmpty())
             out += '\n';
+        parsed.slides.append({out.mid(start), start, int(out.size())});
     }
-    apply(out, selected, true, anchor);
+    apply(out, selected, true, anchor, &parsed);
+}
+void Deck::replaceHeader(const QString &header) {
+    auto parsed = m_parsed;
+    const int shift = header.size() - parsed.header.size();
+    parsed.header = header;
+    for (auto &slide : parsed.slides) {
+        slide.start += shift;
+        slide.end += shift;
+    }
+    apply(header + m_source.mid(m_parsed.header.size()), m_selected, true, -1, &parsed);
 }
 void Deck::moveSlide(int from, int to) {
     if (from < 0 || from >= count() || to < 0 || to >= count() || from == to)
@@ -341,15 +401,15 @@ void Deck::undo() {
     if (m_undo.isEmpty())
         return;
     auto state = m_undo.takeLast();
-    m_redo.append({m_source, m_selected, m_anchor});
-    apply(state.source, state.selected, false, state.anchor);
+    m_redo.append({m_source, m_selected, m_anchor, m_parsed});
+    apply(state.source, state.selected, false, state.anchor, &state.parsed);
 }
 void Deck::redo() {
     if (m_redo.isEmpty())
         return;
     auto state = m_redo.takeLast();
-    m_undo.append({m_source, m_selected, m_anchor});
-    apply(state.source, state.selected, false, state.anchor);
+    m_undo.append({m_source, m_selected, m_anchor, m_parsed});
+    apply(state.source, state.selected, false, state.anchor, &state.parsed);
 }
 void Deck::discoverThemes() {
     QString root = qEnvironmentVariable("OMARCHY_PATH", QDir::homePath() + "/.local/share/omarchy");
@@ -397,7 +457,7 @@ void Deck::chooseFont(const QString &family) {
     if (!fontNames().contains(family) || family == fontName())
         return;
     const QString header = setScalar(m_parsed.header, "font", family);
-    apply(header + m_source.mid(m_parsed.header.size()), m_selected);
+    replaceHeader(header);
 }
 QStringList Deck::themeNames() const { return m_themes.keys(); }
 QString Deck::themeName() const { return scalar(m_parsed.header, "theme", "tokyo-night"); }
@@ -445,7 +505,7 @@ void Deck::chooseTheme(const QString &name) {
             header = setScalar(header, "color_" + m.captured(1), m.captured(2));
         }
     }
-    apply(header + m_source.mid(m_parsed.header.size()), m_selected);
+    replaceHeader(header);
 }
 QVariantMap Deck::media() const {
     const QString source = slideSource(), base = baseDir();
@@ -516,23 +576,64 @@ bool Deck::loadPath(const QString &path) {
     return true;
 }
 bool Deck::savePath(const QString &path) {
+    const auto parsed = parseDeck(m_source);
+    bool sameSlides = parsed.slides.size() == count();
+    for (int i = 0; sameSlides && i < count(); ++i)
+        sameSlides = parsed.slides[i].source == m_parsed.slides[i].source;
+    if (!parsed.error.isEmpty() || !m_parsed.error.isEmpty() || !sameSlides) {
+        const QString problem = !m_parsed.error.isEmpty() ? m_parsed.error :
+                                !parsed.error.isEmpty() ? parsed.error : "Unfinished slide boundaries";
+        setStatus("Cannot save: " + problem + ". Finish the Markdown first; your changes are still in the editor.");
+        return false;
+    }
     if (QFileInfo(path).absoluteFilePath() == m_path && m_externalChange) {
         setStatus("File changed on disk. Use Save As to keep both versions.");
         return false;
     }
-    if (QFileInfo(path).absoluteFilePath() == m_path) {
-        QFile disk(m_path);
-        if (disk.open(QIODevice::ReadOnly) && QString::fromUtf8(disk.readAll()) != m_saved) {
+    QByteArray previous;
+    if (QFile::exists(path)) {
+        QFile disk(path);
+        if (!disk.open(QIODevice::ReadOnly)) {
+            setStatus("Cannot read the existing presentation: " + disk.errorString());
+            return false;
+        }
+        previous = disk.readAll();
+        if (disk.error() != QFile::NoError) {
+            setStatus("Cannot read the existing presentation: " + disk.errorString());
+            return false;
+        }
+        if (QFileInfo(path).absoluteFilePath() == m_path && QString::fromUtf8(previous) != m_saved) {
             m_externalChange = true;
             setStatus("File changed on disk. Save a copy or reopen.");
             return false;
         }
     }
+    const QByteArray next = m_source.toUtf8();
+    const QFileInfo target(path);
+    const QString backupPrefix = target.fileName() + ".";
+    QDir backups(target.absolutePath() + "/.hype-backups");
+    if (!previous.isEmpty() && previous != next) {
+        const QString stamp = QDateTime::currentDateTimeUtc().toString("yyyyMMdd-HHmmss-zzz");
+        const QString hash = QString::fromLatin1(QCryptographicHash::hash(previous, QCryptographicHash::Sha256).toHex().left(16));
+        QSaveFile backup(backups.filePath(backupPrefix + stamp + "-" + hash + ".bak"));
+        if (!QDir().mkpath(backups.absolutePath()) || !backup.open(QIODevice::WriteOnly) ||
+            backup.write(previous) != previous.size() || !backup.commit()) {
+            setStatus("Could not create a recovery backup. The saved presentation was left untouched.");
+            return false;
+        }
+    }
     QSaveFile f(path);
-    if (!f.open(QIODevice::WriteOnly) || f.write(m_source.toUtf8()) < 0 || !f.commit()) {
+    if (!f.open(QIODevice::WriteOnly) || f.write(next) != next.size() || !f.commit()) {
         setStatus(f.errorString());
         return false;
     }
+    // Keep the last twenty saved versions of this file, independent of Dropbox.
+    QStringList versions;
+    const QRegularExpression backupName("^" + QRegularExpression::escape(backupPrefix) +
+                                       "[0-9]{8}-[0-9]{6}-[0-9]{3}-[a-f0-9]{16}\\.bak$");
+    for (const auto &name : backups.entryList(QDir::Files, QDir::Name))
+        if (backupName.match(name).hasMatch()) versions.append(name);
+    while (versions.size() > 20) backups.remove(versions.takeFirst());
     m_path = QFileInfo(path).absoluteFilePath();
     m_saved = m_source;
     m_externalChange = false;
@@ -550,8 +651,9 @@ bool Deck::confirmDiscard() {
 void Deck::openDialog() {
     if (!confirmDiscard())
         return;
-    QString p =
-        QFileDialog::getOpenFileName(nullptr, "Open File", dialogDirectory(), "Markdown (*.md)");
+    QString error;
+    const QString p = FileDialog::choose(false, dialogDirectory(), "Markdown", {"*.md"}, &error);
+    if (!error.isEmpty()) setStatus(error);
     if (!p.isEmpty())
         loadPath(p);
 }
@@ -562,11 +664,12 @@ void Deck::save() {
         savePath(m_path);
 }
 void Deck::saveAs() {
-    QString p = QFileDialog::getSaveFileName(
-        nullptr, "Save File",
+    QString error;
+    const QString p = FileDialog::choose(true,
         QDir(dialogDirectory())
             .filePath(m_path.isEmpty() ? "presentation.md" : QFileInfo(m_path).fileName()),
-        "Markdown (*.md)");
+        "Markdown", {"*.md"}, &error);
+    if (!error.isEmpty()) setStatus(error);
     if (p.isEmpty())
         return;
     if (!m_path.isEmpty() && QFileInfo(p).absolutePath() != baseDir()) {
@@ -607,9 +710,11 @@ void Deck::newDeck() {
     watch();
 }
 void Deck::importDialog() {
-    QString p = QFileDialog::getOpenFileName(nullptr, "Open File", baseDir(),
-                                             "Media (*.png *.jpg *.jpeg *.webp *.gif "
-                                             "*.svg *.mp4 *.mov *.mkv *.webm *.m4v)");
+    QString error;
+    const QString p = FileDialog::choose(false, baseDir(), "Media",
+        {"*.png", "*.jpg", "*.jpeg", "*.webp", "*.gif", "*.svg",
+         "*.mp4", "*.mov", "*.mkv", "*.webm", "*.m4v"}, &error);
+    if (!error.isEmpty()) setStatus(error);
     if (!p.isEmpty())
         importMedia(QUrl::fromLocalFile(p));
 }
@@ -658,13 +763,15 @@ void Deck::importMedia(const QUrl &url) {
     setStatus("Added " + name);
 }
 bool Deck::pasteMedia() {
+    if (m_compressingImage)
+        return true;
     const QMimeData *clipboard = QApplication::clipboard()->mimeData();
     if (!clipboard)
         return false;
     QString source, extension, suggested = "image";
     bool video = false;
     QImage image;
-    QByteArray videoData;
+    QByteArray mediaData;
     // Prefer copied files to thumbnail image data supplied by file managers.
     for (const QUrl &url : clipboard->urls()) {
         if (!url.isLocalFile())
@@ -688,8 +795,8 @@ bool Deck::pasteMedia() {
         for (auto it = formats.cbegin(); it != formats.cend(); ++it) {
             if (!clipboard->hasFormat(it.key()))
                 continue;
-            videoData = clipboard->data(it.key());
-            if (videoData.isEmpty())
+            mediaData = clipboard->data(it.key());
+            if (mediaData.isEmpty())
                 continue;
             video = true;
             extension = it.value();
@@ -708,12 +815,87 @@ bool Deck::pasteMedia() {
         if (m_path.isEmpty())
             return true;
     }
-    m_paste = {source, extension, m_path, m_source, image, videoData, video, m_selected};
-    emit pasteRequested(suggested, extension, video);
+    m_paste = {source, extension, m_path, m_source, mediaData, video, m_selected};
+    QImageReader reader(source);
+    const bool compress = !video && (source.isEmpty() ||
+        (!(reader.supportsAnimation() && reader.imageCount() != 1) &&
+         reader.format() != "svg" && reader.format() != "svgz"));
+    if (!compress) {
+        emit pasteRequested(suggested, extension, video);
+        return true;
+    }
+    const auto media = parseMedia(withMedia(slideSource(), "![](<paste.png>)"), baseDir());
+    const auto generation = ++m_pasteGeneration;
+    m_compressingImage = true;
+    emit compressingImageChanged();
+    using Result = std::pair<PendingPaste, QString>;
+    auto *watcher = new QFutureWatcher<Result>(this);
+    connect(watcher, &QFutureWatcher<Result>::finished, this, [this, watcher, generation, suggested] {
+        auto result = watcher->result();
+        watcher->deleteLater();
+        if (generation != m_pasteGeneration)
+            return; // Cancelled work must not reopen the naming dialog.
+        m_compressingImage = false;
+        emit compressingImageChanged();
+        if (!result.second.isEmpty()) {
+            m_paste = {};
+            setStatus(result.second);
+            return;
+        }
+        if (m_path != result.first.path || m_source != result.first.document ||
+            m_selected != result.first.selected) {
+            m_paste = {};
+            setStatus("The slide changed. Paste the image again.");
+            return;
+        }
+        m_paste = std::move(result.first);
+        emit pasteRequested(suggested, m_paste.extension, false);
+    });
+    // Clipboard access stays on the UI thread; decoding, scaling and both lossless
+    // encoders work on an independent snapshot without touching the document.
+    watcher->setFuture(QtConcurrent::run([pending = m_paste, image, span = media.span]() mutable -> Result {
+        const QSize canvas(3840, 2160);
+        QSize original;
+        if (!pending.source.isEmpty()) {
+            QImageReader reader(pending.source);
+            original = reader.size();
+            if (reader.transformation() & QImageIOHandler::TransformationRotate90)
+                original.transpose();
+            image = readSizedImage(pending.source, canvas, span);
+        } else {
+            original = image.size();
+            const QSize target = imageSizeForCanvas(original, canvas, span);
+            if (target != original)
+                image = image.scaled(target, Qt::IgnoreAspectRatio, Qt::SmoothTransformation);
+        }
+        if (image.isNull())
+            return {{}, "Could not read the pasted image."};
+        QString optimizedExtension;
+        QByteArray encoded = compressedImage(image, &optimizedExtension);
+        if (encoded.isEmpty())
+            return {{}, "Could not compress the pasted image."};
+        // Keep an already-small JPEG/WebP when it beats the lossless rewrite.
+        if (pending.source.isEmpty() || image.size() != original ||
+            encoded.size() < QFileInfo(pending.source).size()) {
+            pending.source.clear();
+            pending.extension = optimizedExtension;
+            pending.data = std::move(encoded);
+        }
+        return {std::move(pending), {}};
+    }));
     return true;
 }
-void Deck::cancelPaste() { m_paste = {}; }
+void Deck::cancelPaste() {
+    ++m_pasteGeneration;
+    m_paste = {};
+    if (m_compressingImage) {
+        m_compressingImage = false;
+        emit compressingImageChanged();
+    }
+}
 QString Deck::savePastedMedia(const QString &value) {
+    if (m_compressingImage)
+        return "The image is still being compressed.";
     if (m_paste.extension.isEmpty())
         return "Paste an image or video first.";
     if (m_path != m_paste.path || m_source != m_paste.document || m_selected != m_paste.selected)
@@ -737,8 +919,7 @@ QString Deck::savePastedMedia(const QString &value) {
     else {
         QFile output(destination);
         if (output.open(QIODevice::WriteOnly | QIODevice::NewOnly)) {
-            saved = m_paste.video ? output.write(m_paste.data) == m_paste.data.size()
-                                  : m_paste.image.save(&output, "PNG");
+            saved = output.write(m_paste.data) == m_paste.data.size();
             saved = output.flush() && saved;
             output.close();
             if (!saved)
@@ -765,27 +946,50 @@ QString Deck::renderId(int index) const {
         bytes.toBase64(QByteArray::Base64UrlEncoding | QByteArray::OmitTrailingEquals));
 }
 void Deck::matchImageBackground(bool enabled) {
-    setImageBackground(enabled ? "auto" : "theme");
+    setMediaBackground(enabled ? "auto" : "theme");
 }
-void Deck::setImageBackground(const QString &mode) {
+void Deck::setMediaBackground(const QString &mode) {
     if (!QStringList{"auto", "theme", "blur"}.contains(mode))
         return;
     auto media = parseMedia(slideSource(), baseDir());
-    if (media.file.isEmpty() || media.video)
+    if (media.file.isEmpty())
         return;
-    QString source = slideSource();
-    QRegularExpression re("!\\[([^\\]]*)\\]\\(");
-    auto match = re.match(source);
-    if (!match.hasMatch())
+    const bool fittedBackground = mode == "blur" || (media.video && mode == "auto");
+    const QString source = slideSource();
+    const QString marker = "\x01HYPE_MEDIA\x01";
+    const QString marked = withMedia(source, marker);
+    const int start = marked.indexOf(marker);
+    const int length = source.size() - marked.size() + marker.size();
+    if (start < 0 || length <= 0)
         return;
-    QString flags = match.captured(1);
-    flags.remove(QRegularExpression("\\s*background=(?:\"[^\"]*\"|[^\\s]+)"));
-    if (!flags.isEmpty() && !flags.contains('=') &&
-        !QStringList{"fit", "left", "right", "span"}.contains(flags.trimmed()))
-        flags = "alt=\"" + flags.replace('"', "\\\"") + "\"";
-    flags += " background=" + mode;
-    source.replace(match.capturedStart(1), match.capturedLength(1), flags.trimmed());
-    editSlide(source);
+    QString reference = source.mid(start, length);
+    const int end = reference.indexOf("](");
+    if (end < 2)
+        return;
+    QString flags = reference.mid(2, end - 2).trimmed();
+    const QRegularExpression tokens(R"re(([a-z]+)(?:=("(?:[^"\\]|\\.)*"|[^\s]+))?)re");
+    const auto first = tokens.match(flags);
+    const bool directives = first.hasMatch() && first.capturedStart() == 0 &&
+        (QStringList{"fit", "span", "left", "right", "loop", "muted"}.contains(first.captured(1)) ||
+         !first.captured(2).isEmpty());
+    QStringList kept;
+    if (directives) {
+        auto matches = tokens.globalMatch(flags);
+        while (matches.hasNext()) {
+            const auto token = matches.next();
+            const QString key = token.captured(1);
+            if (key != "background" && !(fittedBackground && (key == "span" || key == "fit")))
+                kept << token.captured();
+        }
+    } else if (!flags.isEmpty()) {
+        kept << "alt=\"" + flags.replace("\\", "\\\\").replace("\"", "\\\"") + "\"";
+    }
+    // A spanning foreground would hide the chosen background entirely.
+    if (fittedBackground && media.side.isEmpty())
+        kept.prepend("fit");
+    kept << "background=" + mode;
+    reference.replace(2, end - 2, kept.join(' '));
+    editSlide(withMedia(source, reference));
 }
 void Deck::setMediaMode(const QString &mode) {
     QRegularExpression re("!\\[([^\\]]*)\\]\\(");
@@ -803,16 +1007,146 @@ void Deck::setMediaMode(const QString &mode) {
     editSlide(s);
 }
 void Deck::exportDialog(const QString &format) {
-    QString p = QFileDialog::getSaveFileName(nullptr, "Save File",
-                                             baseDir() + "/" + title() + "." + format,
-                                             format.toUpper() + " (*." + format + ")");
+    if (m_exporting)
+        return;
+    QString error;
+    const QString p = FileDialog::choose(true, baseDir() + "/" + title() + "." + format,
+                                         format.toUpper(), {"*." + format}, &error);
+    if (!error.isEmpty()) setStatus(error);
     if (p.isEmpty())
         return;
-    setStatus("Exporting…");
-    if (format == "pdf")
-        exportPdf(p);
-    else
-        exportPptx(p);
+    startExport(format, p);
+}
+static void stopExport(QProcess *process) {
+    if (process && process->processId() > 0) {
+        // Include any FFmpeg child processes in cancellation.
+        ::kill(-process->processId(), SIGKILL);
+        process->kill();
+    }
+}
+Deck::~Deck() {
+    if (m_exportProcess) {
+        disconnect(m_exportProcess, nullptr, this, nullptr);
+        if (m_exportProcess->state() == QProcess::Starting)
+            m_exportProcess->waitForStarted(1000);
+        stopExport(m_exportProcess);
+        m_exportProcess->waitForFinished(1000);
+    }
+}
+void Deck::cancelExport() {
+    if (!m_exporting) return;
+    m_exportCancelled = true;
+    stopExport(m_exportProcess);
+}
+bool Deck::loadExportSnapshot(const QString &path) {
+    QFile file(path);
+    if (!file.open(QIODevice::ReadOnly)) {
+        setStatus(file.errorString());
+        return false;
+    }
+    const auto snapshot = QJsonDocument::fromJson(file.readAll()).object();
+    if (!snapshot["source"].isString() || !snapshot["path"].isString()) {
+        setStatus("Invalid export snapshot.");
+        return false;
+    }
+    m_path = snapshot["path"].toString();
+    m_source = snapshot["source"].toString();
+    m_parsed = parseDeck(m_source);
+    m_paletteHeader = m_parsed.header;
+    m_paletteCache = snapshot["palette"].toObject().toVariantMap();
+    return true;
+}
+void Deck::startExport(const QString &format, const QString &path) {
+    if (m_exporting || path.isEmpty() || !QStringList{"pdf", "pptx"}.contains(format))
+        return;
+    auto temporary = std::make_shared<QTemporaryDir>();
+    const QString destination = QFileInfo(path).absoluteFilePath();
+    auto staged = std::make_shared<QTemporaryDir>(QFileInfo(destination).absolutePath() + "/.hype-export-XXXXXX");
+    QFile snapshot(temporary->filePath("presentation.json"));
+    const QByteArray data = QJsonDocument(QJsonObject{
+        {"source", m_source},
+        {"path", m_path.isEmpty() ? baseDir() + "/Untitled.md" : m_path},
+        {"palette", QJsonObject::fromVariantMap(palette())}}).toJson();
+    if (!temporary->isValid() || !staged->isValid() || !snapshot.open(QIODevice::WriteOnly) || snapshot.write(data) != data.size()) {
+        m_exportFailed = true;
+        m_exportStatus = "Could not prepare the export.";
+        emit exportChanged();
+        emit exportFinished(false);
+        return;
+    }
+    snapshot.close();
+    m_exporting = true;
+    m_exportCancelled = false;
+    m_exportFailed = false;
+    m_exportProgress = 0;
+    m_exportStatus = "Preparing " + format.toUpper() + " export…";
+    emit exportChanged();
+    auto *process = new QProcess(this);
+    m_exportProcess = process;
+    process->setUnixProcessParameters(QProcess::UnixProcessFlag::CreateNewSession);
+    connect(process, &QProcess::started, this, [this, process] {
+        if (m_exportCancelled) stopExport(process);
+    });
+    // A separate renderer keeps Qt painting, compression and video conversion
+    // away from the editor. It reads an immutable snapshot, including unsaved edits.
+    auto environment = QProcessEnvironment::systemEnvironment();
+    environment.insert("QT_QPA_PLATFORM", "offscreen");
+    environment.insert("QT_QPA_PLATFORMTHEME", "generic");
+    environment.insert("TMPDIR", temporary->path());
+    process->setProcessEnvironment(environment);
+    auto pending = std::make_shared<QByteArray>();
+    auto failure = std::make_shared<QString>();
+    auto diagnostics = std::make_shared<QByteArray>();
+    auto readProgress = [this, process, pending, failure] {
+        pending->append(process->readAllStandardOutput());
+        int end;
+        while ((end = pending->indexOf('\n')) >= 0) {
+            const auto event = QJsonDocument::fromJson(pending->left(end)).object();
+            pending->remove(0, end + 1);
+            if (event.contains("error")) *failure = event["error"].toString();
+            if (!event.contains("progress")) continue;
+            m_exportProgress = qBound(0.0, event["progress"].toDouble(), 1.0);
+            m_exportStatus = event["message"].toString();
+            emit exportChanged();
+        }
+    };
+    connect(process, &QProcess::readyReadStandardOutput, this, readProgress);
+    connect(process, &QProcess::readyReadStandardError, this, [process, diagnostics] {
+        *diagnostics = (*diagnostics + process->readAllStandardError()).right(8192);
+    });
+    auto completed = std::make_shared<bool>(false);
+    auto finish = [this, process, temporary, staged, completed, destination](bool success, QString message) {
+        if (*completed) return;
+        *completed = true;
+        success = success && !m_exportCancelled;
+        if (success && ::rename(QFile::encodeName(staged->filePath("output")).constData(),
+                                QFile::encodeName(destination).constData()) != 0) {
+            success = false;
+            message = "Could not save the export: " + QString::fromLocal8Bit(std::strerror(errno));
+        }
+        m_exporting = false;
+        m_exportProcess = nullptr;
+        m_exportFailed = !success && !m_exportCancelled;
+        if (success) m_exportProgress = 1;
+        m_exportStatus = m_exportCancelled ? "Export cancelled" : success ? "Exported " + QFileInfo(destination).fileName() : "Export failed: " + message;
+        process->deleteLater();
+        emit exportChanged();
+        emit exportFinished(success);
+    };
+    connect(process, &QProcess::finished, this,
+        [process, readProgress, finish, failure, diagnostics](int code, QProcess::ExitStatus exitStatus) {
+            readProgress();
+            const bool success = exitStatus == QProcess::NormalExit && code == 0;
+            QString error = *failure;
+            if (error.isEmpty()) error = QString::fromUtf8(*diagnostics + process->readAllStandardError()).trimmed();
+            if (error.isEmpty()) error = "The export process stopped unexpectedly.";
+            finish(success, error);
+        });
+    connect(process, &QProcess::errorOccurred, this, [process, finish](QProcess::ProcessError error) {
+        if (error == QProcess::FailedToStart) finish(false, process->errorString());
+    });
+    process->start(m_exportProgram, {"--export-snapshot", snapshot.fileName(), "--" + format,
+                                    staged->filePath("output")});
 }
 bool Deck::exportPdf(const QString &path) {
     for (int i = 0; i < count(); ++i) {
@@ -831,14 +1165,16 @@ bool Deck::exportPdf(const QString &path) {
         QPdfWriter writer(&file);
         writer.setPageSize(QPageSize(QSizeF(338.6667, 190.5), QPageSize::Millimeter));
         writer.setPageMargins(QMarginsF(0, 0, 0, 0));
-        writer.setResolution(144);
+        writer.setResolution(288); // 3840 × 2160 raster budget; text remains vector.
         writer.setTitle(title());
         QPainter painter(&writer);
+        painter.setRenderHint(QPainter::LosslessImageRendering);
         if (!painter.isActive()) {
             setStatus("Could not initialize PDF painter");
             return false;
         }
         for (int i = 0; i < count(); ++i) {
+            emit exportAdvanced(double(i) / count(), QString("Exporting PDF · slide %1 of %2").arg(i + 1).arg(count()));
             if (i && !writer.newPage()) {
                 setStatus("Could not create PDF page");
                 return false;
@@ -859,6 +1195,12 @@ bool Deck::renderImages(const QString &directory, int width, bool convertAnimati
     QDir().mkpath(directory);
     QJsonArray slides;
     for (int i = 0; i < count(); ++i) {
+        const double portion = convertAnimations ? 0.8 : 1.0;
+        auto progress = [this, i, portion](double fraction, const QString &stage) {
+            emit exportAdvanced(portion * (i + fraction) / count(),
+                QString("%1 · slide %2 of %3").arg(stage).arg(i + 1).arg(count()));
+        };
+        progress(0, "Rendering");
         auto errors = slideProblems(slide(i), baseDir());
         if (!errors.isEmpty()) {
             setStatus(QString("Slide %1: %2").arg(i + 1).arg(errors.join("; ")));
@@ -879,6 +1221,17 @@ bool Deck::renderImages(const QString &directory, int width, bool convertAnimati
         QJsonObject entry{{"image", name}, {"warning", warning}};
         if (media.video) {
             entry["video"] = media.path;
+            if (convertAnimations) {
+                QString error;
+                const auto movie = preparePowerPointVideo(media.path,
+                    QString("%1/video-%2.mp4").arg(directory).arg(i + 1), &error,
+                    [&](double fraction) { progress(fraction, "Converting video"); });
+                if (movie.isEmpty()) {
+                    setStatus(QString("Slide %1: %2").arg(i + 1).arg(error));
+                    return false;
+                }
+                entry["video"] = movie;
+            }
             entry["poster"] =
                 media.poster.isEmpty() ? ensurePoster(media.path, baseDir()) : media.poster;
             entry["span"] = media.span;
@@ -893,8 +1246,10 @@ bool Deck::renderImages(const QString &directory, int width, bool convertAnimati
                 const QString movie = QString("animation-%1.mp4").arg(i + 1);
                 int repeats = 1;
                 QString error;
+                progress(0, "Converting animation");
                 if (!exportAnimation(slide(i), baseDir(), palette(), directory + "/" + movie, width,
-                                     &repeats, &error)) {
+                                     &repeats, &error,
+                                     [&](double fraction) { progress(fraction, "Converting animation"); })) {
                     setStatus(QString("Slide %1: %2").arg(i + 1).arg(error));
                     return false;
                 }
@@ -934,7 +1289,9 @@ bool Deck::exportPptx(const QString &path) {
     if (!renderImages(temp.path(), 3840, true))
         return false;
     QString error;
-    if (!writePptx(temp.path() + "/slides.json", path, &error)) {
+    emit exportAdvanced(0.8, "Packaging PowerPoint…");
+    if (!writePptx(temp.path() + "/slides.json", path, &error,
+        [this](double fraction) { emit exportAdvanced(0.8 + 0.2 * fraction, "Packaging PowerPoint…"); })) {
         setStatus("PowerPoint export failed: " + error);
         return false;
     }

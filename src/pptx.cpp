@@ -408,7 +408,62 @@ bool readSlide(const QJsonObject &entry, const QDir &base, Slide &slide, QString
 }
 } // namespace
 
-bool writePptx(const QString &manifestPath, const QString &destination, QString *error) {
+QString preparePowerPointVideo(const QString &source, const QString &output, QString *error,
+                              const std::function<void(double)> &progress) {
+    QProcess probe;
+    probe.start("ffprobe", {"-v", "error", "-show_streams", "-show_format", "-of", "json", source});
+    if (!probe.waitForFinished(30000) || probe.exitCode() != 0) {
+        probe.kill();
+        probe.waitForFinished();
+        *error = "Cannot inspect video: " + QFileInfo(source).fileName();
+        return {};
+    }
+    const auto info = QJsonDocument::fromJson(probe.readAllStandardOutput()).object();
+    QJsonObject video, audio;
+    for (const auto &value : info["streams"].toArray()) {
+        const auto stream = value.toObject();
+        if (stream["codec_type"] == "video" && video.isEmpty()) video = stream;
+        if (stream["codec_type"] == "audio" && audio.isEmpty()) audio = stream;
+    }
+    if (video.isEmpty()) {
+        *error = "No video stream in " + QFileInfo(source).fileName();
+        return {};
+    }
+    if (QFileInfo(source).suffix().toLower() == "mp4" && video["codec_name"] == "h264" &&
+        (audio.isEmpty() || audio["codec_name"] == "aac"))
+        return source;
+    const double duration = info["format"].toObject()["duration"].toString().toDouble();
+    QProcess encoder;
+    encoder.start("ffmpeg", {"-v", "error", "-nostdin", "-y", "-i", source,
+        "-map", "0:v:0", "-map", "0:a:0?", "-c:v", "libx264", "-preset", "fast", "-crf", "18",
+        "-threads", "2", "-vf", "pad=ceil(iw/2)*2:ceil(ih/2)*2", "-pix_fmt", "yuv420p",
+        "-c:a", "aac", "-b:a", "192k", "-movflags", "+faststart", "-progress", "pipe:1", output});
+    if (!encoder.waitForStarted()) {
+        *error = "Cannot start video conversion: " + encoder.errorString();
+        return {};
+    }
+    QByteArray pending, errors;
+    do {
+        encoder.waitForFinished(200);
+        errors = (errors + encoder.readAllStandardError()).right(8192);
+        pending += encoder.readAllStandardOutput();
+        int end;
+        while ((end = pending.indexOf('\n')) >= 0) {
+            const QByteArray line = pending.left(end);
+            pending.remove(0, end + 1);
+            if (progress && duration > 0 && line.startsWith("out_time_us="))
+                progress(qBound(0.0, line.mid(12).toDouble() / 1e6 / duration, 1.0));
+        }
+    } while (encoder.state() != QProcess::NotRunning);
+    if (encoder.exitStatus() != QProcess::NormalExit || encoder.exitCode() != 0) {
+        *error = "Cannot convert " + QFileInfo(source).fileName() + ": " + QString::fromUtf8(errors).trimmed();
+        return {};
+    }
+    return output;
+}
+
+bool writePptx(const QString &manifestPath, const QString &destination, QString *error,
+               const std::function<void(double)> &progress) {
     if (error)
         error->clear();
     auto fail = [&](const QString &message) {
@@ -541,6 +596,7 @@ bool writePptx(const QString &manifestPath, const QString &destination, QString 
         return "../" + target;
     };
     for (int i = 0; i < slides.size() && zip.error.isEmpty(); ++i) {
+        if (progress) progress(double(i) / slides.size());
         const auto &slide = slides[i];
         const QString number = QString::number(i + 1);
         QList<Relationship> rels{{"rId1", "slideLayout", "../slideLayouts/slideLayout1.xml"},

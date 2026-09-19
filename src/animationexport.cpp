@@ -11,7 +11,8 @@
 #include <webp/demux.h>
 
 bool exportAnimation(const QString &source, const QString &base, const QVariantMap &palette,
-                     const QString &output, int width, int *repeats, QString *error) {
+                     const QString &output, int width, int *repeats, QString *error,
+                     const std::function<void(double)> &progress) {
     const auto media = parseMedia(source, base);
     QImageReader reader(media.path);
     int frames = reader.imageCount();
@@ -59,6 +60,7 @@ bool exportAnimation(const QString &source, const QString &base, const QVariantM
     QByteArray concat("ffconcat version 1.0\n");
     qint64 duration = 0;
     for (int i = 0; i < frames; ++i) {
+        if (progress) progress(0.5 * i / frames);
         QImage frame;
         int delay;
         if (webp) {
@@ -93,7 +95,7 @@ bool exportAnimation(const QString &source, const QString &base, const QVariantM
             p.setClipRect(rect);
             p.drawImage(
                 QRectF(rect.center() - QPointF(scaled.width() / 2, scaled.height() / 2), scaled),
-                frame);
+                media.text.trimmed().isEmpty() ? frame : softenedImage(frame, scaled));
             p.restore();
             p.drawImage(0, 0, overlay);
         }
@@ -129,6 +131,8 @@ bool exportAnimation(const QString &source, const QString &base, const QVariantM
                              "-an",
                              "-c:v",
                              "libx264",
+                             "-threads", "2",
+                             "-progress", "pipe:1",
                              "-preset",
                              "fast",
                              "-crf",
@@ -148,12 +152,18 @@ bool exportAnimation(const QString &source, const QString &base, const QVariantM
         *error = "Cannot start ffmpeg for animation conversion: " + encoder.errorString();
         return false;
     }
-    if (!encoder.waitForFinished(300000)) {
-        encoder.kill();
-        encoder.waitForFinished();
-        *error = "Animation conversion timed out";
-        return false;
-    }
+    QByteArray pending;
+    do {
+        encoder.waitForFinished(200);
+        pending += encoder.readAllStandardOutput();
+        int end;
+        while ((end = pending.indexOf('\n')) >= 0) {
+            const QByteArray line = pending.left(end);
+            pending.remove(0, end + 1);
+            if (progress && duration > 0 && line.startsWith("out_time_us="))
+                progress(0.5 + 0.5 * qBound(0.0, line.mid(12).toDouble() / 1000 / duration, 1.0));
+        }
+    } while (encoder.state() != QProcess::NotRunning);
     if (encoder.exitStatus() != QProcess::NormalExit || encoder.exitCode() != 0) {
         *error = "Animation conversion failed: " +
                  QString::fromUtf8(encoder.readAllStandardError()).trimmed();

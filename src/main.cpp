@@ -7,6 +7,8 @@
 #include <QQmlContext>
 #include <QQuickStyle>
 #include <QQuickWindow>
+#include <QJsonDocument>
+#include <QJsonObject>
 #include <QTimer>
 #include <cstdio>
 int main(int argc, char **argv) {
@@ -24,14 +26,33 @@ int main(int argc, char **argv) {
     args.addOption({"slide", "Select a slide (1-based)", "number"});
     args.addOption({"markdown", "Start in full-document Markdown mode"});
     args.addOption({"screenshot", "Save editor screenshot and exit", "file"});
+    QCommandLineOption snapshotOption("export-snapshot", "Internal export snapshot", "file");
+    snapshotOption.setFlags(QCommandLineOption::HiddenFromHelp);
+    args.addOption(snapshotOption);
     args.process(app);
     Deck deck;
+    const bool exportWorker = args.isSet(snapshotOption);
+    auto report = [](const QJsonObject &event) {
+        const auto line = QJsonDocument(event).toJson(QJsonDocument::Compact);
+        fprintf(stdout, "%s\n", line.constData());
+        fflush(stdout);
+    };
+    if (exportWorker) {
+        if (!args.isSet("pdf") && !args.isSet("pptx")) return 1;
+        if (!deck.loadExportSnapshot(args.value(snapshotOption))) {
+            report({{"error", deck.status()}});
+            return 1;
+        }
+        QObject::connect(&deck, &Deck::exportAdvanced, &app, [report](double progress, const QString &message) {
+            report({{"progress", progress}, {"message", message}});
+        });
+    }
     auto positional = args.positionalArguments();
     if (!positional.isEmpty() && !deck.loadPath(positional[0])) {
         fprintf(stderr, "%s\n", qPrintable(deck.status()));
         return 1;
     }
-    if (positional.isEmpty())
+    if (positional.isEmpty() && !exportWorker)
         deck.reopenLastPresentation();
     if (args.isSet("theme"))
         deck.chooseTheme(args.value("theme"));
@@ -48,6 +69,11 @@ int main(int argc, char **argv) {
                                                      : deck.renderImages(args.value(option)));
         }
     if (headless) {
+        if (exportWorker) {
+            if (success) report({{"progress", 1.0}, {"message", deck.status()}});
+            else report({{"error", deck.status()}});
+            return success ? 0 : 1;
+        }
         fprintf(success ? stdout : stderr, "%s\n", qPrintable(deck.status()));
         return success ? 0 : 1;
     }

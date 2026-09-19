@@ -5,6 +5,7 @@
 #include <QImage>
 #include <QUrl>
 #include <QVariantMap>
+class QProcess;
 
 struct Slide {
     QString source;
@@ -36,6 +37,11 @@ class Deck : public QAbstractListModel {
     Q_PROPERTY(QString title READ title NOTIFY changed)
     Q_PROPERTY(QString sizeLabel READ sizeLabel NOTIFY changed)
     Q_PROPERTY(QString status READ status NOTIFY statusChanged)
+    Q_PROPERTY(bool compressingImage READ compressingImage NOTIFY compressingImageChanged)
+    Q_PROPERTY(bool exporting READ exporting NOTIFY exportChanged)
+    Q_PROPERTY(double exportProgress READ exportProgress NOTIFY exportChanged)
+    Q_PROPERTY(QString exportStatus READ exportStatus NOTIFY exportChanged)
+    Q_PROPERTY(bool exportFailed READ exportFailed NOTIFY exportChanged)
     Q_PROPERTY(QStringList fontNames READ fontNames CONSTANT)
     Q_PROPERTY(QString fontName READ fontName NOTIFY changed)
     Q_PROPERTY(QStringList themeNames READ themeNames CONSTANT)
@@ -45,7 +51,16 @@ class Deck : public QAbstractListModel {
     Q_PROPERTY(QColor accent READ accent NOTIFY changed)
     Q_PROPERTY(QVariantMap media READ media NOTIFY changed)
   public:
-    explicit Deck(QObject *parent = nullptr);
+    explicit Deck(QObject *parent = nullptr, const QString &exportProgram = {});
+    ~Deck() override;
+    bool compressingImage() const { return m_compressingImage; }
+    bool exporting() const { return m_exporting; }
+    double exportProgress() const { return m_exportProgress; }
+    QString exportStatus() const { return m_exportStatus; }
+    bool exportFailed() const { return m_exportFailed; }
+    bool loadExportSnapshot(const QString &path);
+    Q_INVOKABLE void startExport(const QString &format, const QString &path);
+    Q_INVOKABLE void cancelExport();
     enum { TitleRole = Qt::UserRole + 1, NumberRole };
     int rowCount(const QModelIndex &parent = {}) const override;
     QVariant data(const QModelIndex &, int role) const override;
@@ -111,12 +126,16 @@ class Deck : public QAbstractListModel {
     Q_INVOKABLE void exportDialog(const QString &format);
     Q_INVOKABLE QString renderId(int index) const;
     Q_INVOKABLE void matchImageBackground(bool enabled);
-    Q_INVOKABLE void setImageBackground(const QString &mode);
+    Q_INVOKABLE void setMediaBackground(const QString &mode);
     Q_INVOKABLE void setMediaMode(const QString &mode);
     Q_INVOKABLE void setStatus(const QString &status);
   signals:
     void changed();
     void statusChanged();
+    void compressingImageChanged();
+    void exportChanged();
+    void exportAdvanced(double progress, const QString &message);
+    void exportFinished(bool success);
     void pasteRequested(const QString &name, const QString &extension, bool video);
 
   private:
@@ -124,6 +143,7 @@ class Deck : public QAbstractListModel {
         QString source;
         int selected;
         int anchor;
+        ParsedDeck parsed;
     };
     mutable QString m_paletteHeader, m_mediaSource, m_mediaBase;
     mutable QString m_sizeSource, m_sizeBase;
@@ -137,14 +157,23 @@ class Deck : public QAbstractListModel {
     QMap<QString, QString> m_themes;
     QFileSystemWatcher m_watcher;
     bool m_externalChange = false;
+    bool m_compressingImage = false;
+    quint64 m_pasteGeneration = 0;
+    bool m_exporting = false, m_exportFailed = false;
+    double m_exportProgress = 0;
+    QString m_exportStatus;
+    QString m_exportProgram;
+    QProcess *m_exportProcess = nullptr;
+    bool m_exportCancelled = false;
     struct PendingPaste {
         QString source, extension, path, document;
-        QImage image;
         QByteArray data;
         bool video = false;
         int selected = 0;
     } m_paste;
-    void apply(const QString &source, int selected, bool history = true, int anchor = -1);
+    void apply(const QString &source, int selected, bool history = true, int anchor = -1,
+               const ParsedDeck *structure = nullptr);
+    void replaceHeader(const QString &header);
     void replaceSlides(const QStringList &slides, int selected, int anchor = -1);
     bool confirmDiscard();
     void discoverThemes();

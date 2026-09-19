@@ -8,7 +8,8 @@
 static QString highlightedHtml(const QString &source, QString language) {
     language = language.toLower().section(' ', 0, 0);
     static const QMap<QString, QString> aliases{
-        {"shell", "sh"}, {"shellscript", "sh"}, {"c++", "cpp"}, {"yml", "yaml"}};
+        {"shell", "sh"}, {"shellscript", "sh"}, {"c++", "cpp"}, {"yml", "yaml"},
+        {"rust", "rs"}};
     language = aliases.value(language, language);
     if (!QRegularExpression("^[a-z0-9+#_-]+$").match(language).hasMatch())
         return {};

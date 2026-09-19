@@ -1,4 +1,4 @@
-QT += core gui qml quick quickcontrols2 multimedia widgets
+QT += core gui qml quick quickcontrols2 multimedia widgets concurrent dbus
 CONFIG += c++17 release
 TARGET = hype
 TEMPLATE = app
@@ -17,3 +17,7 @@ HEADERS += src/animationexport.h
 
 SOURCES += src/apptheme.cpp
 HEADERS += src/apptheme.h
+SOURCES += src/images.cpp
+HEADERS += src/images.h
+SOURCES += src/filedialog.cpp
+HEADERS += src/filedialog.h

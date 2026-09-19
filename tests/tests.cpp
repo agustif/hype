@@ -1,23 +1,78 @@
 #include "apptheme.h"
 #include "deck.h"
+#include "filedialog.h"
 #include "renderer.h"
+#include "images.h"
 #include "syntax.h"
 #include <QApplication>
+#include <QAbstractTextDocumentLayout>
 #include <QClipboard>
+#include <QDBusArgument>
+#include <QDBusConnection>
+#include <QDBusMessage>
+#include <QDBusObjectPath>
+#include <QDBusVirtualObject>
 #include <QFile>
 #include <QImage>
+#include <QGlyphRun>
 #include <QMimeData>
+#include <QMediaPlayer>
 #include <QPainter>
 #include <QPdfDocument>
+#include <QProcess>
 #include <QQmlApplicationEngine>
 #include <QQmlContext>
 #include <QQuickStyle>
 #include <QQuickWindow>
+#include <QQuickItemGrabResult>
 #include <QSettings>
 #include <QSaveFile>
+#include <QScopeGuard>
+#include <QSemaphore>
+#include <QThreadPool>
+#include <QTimer>
+#include <QtConcurrentRun>
 #include <QTemporaryDir>
 #include <QTextCursor>
+#include <QTextBlock>
+#include <QTextLayout>
+#include <QVideoSink>
+#include <QVideoFrame>
 #include <QtTest>
+
+class TestFilePortal : public QDBusVirtualObject {
+  public:
+    QString method, title, selected, alternatePath;
+    QVariantMap options;
+    uint result = 0;
+    bool respondBeforeReply = false;
+    QString introspect(const QString &) const override { return {}; }
+    bool handleMessage(const QDBusMessage &message, const QDBusConnection &bus) override {
+        if (message.interface() != "org.freedesktop.portal.FileChooser") return false;
+        method = message.member();
+        title = message.arguments().at(1).toString();
+        options = qdbus_cast<QVariantMap>(message.arguments().at(2));
+        QString sender = message.service().mid(1);
+        sender.replace('.', '_');
+        const QString path = alternatePath.isEmpty()
+            ? "/org/freedesktop/portal/desktop/request/" + sender + "/" + options["handle_token"].toString()
+            : alternatePath;
+        auto reply = [=] { bus.send(message.createReply(QVariant::fromValue(QDBusObjectPath(path)))); };
+        auto response = [=] {
+            auto signal = QDBusMessage::createSignal(path, "org.freedesktop.portal.Request", "Response");
+            signal.setArguments({result, QVariantMap{{"uris", QStringList{selected}}}});
+            bus.send(signal);
+        };
+        if (respondBeforeReply) {
+            response();
+            QTimer::singleShot(10, this, reply);
+        } else {
+            reply();
+            QTimer::singleShot(10, this, response);
+        }
+        return true;
+    }
+};
 
 class HypeTests : public QObject {
     Q_OBJECT
@@ -31,6 +86,55 @@ class HypeTests : public QObject {
     void initTestCase() {
         QVERIFY(settingsDirectory.isValid());
         QSettings::setPath(QSettings::IniFormat, QSettings::UserScope, settingsDirectory.path());
+    }
+    void portalFileDialogs() {
+        if (!qEnvironmentVariableIsSet("HYPE_PORTAL_TESTS"))
+            QSKIP("Run with HYPE_PORTAL_TESTS=1 under dbus-run-session");
+        auto bus = QDBusConnection::connectToBus(QDBusConnection::SessionBus, "test-file-portal");
+        QVERIFY(bus.registerService("org.freedesktop.portal.Desktop"));
+        TestFilePortal portal;
+        QVERIFY(bus.registerVirtualObject("/org/freedesktop/portal/desktop", &portal));
+        const auto cleanup = qScopeGuard([&] {
+            bus.unregisterObject("/org/freedesktop/portal/desktop");
+            bus.unregisterService("org.freedesktop.portal.Desktop");
+        });
+        QString error;
+        const QString selected = "/tmp/Slides with spaces/æ.md";
+        portal.selected = QUrl::fromLocalFile(selected).toString();
+        QCOMPARE(FileDialog::choose(false, "/tmp", "Markdown", {"*.md"}, &error), selected);
+        QVERIFY2(error.isEmpty(), qPrintable(error));
+        QCOMPARE(portal.method, "OpenFile");
+        QCOMPARE(portal.title, "Open File");
+        QCOMPARE(portal.options["current_folder"].toByteArray(), QByteArray("/tmp\0", 5));
+        QCOMPARE(portal.options["modal"].toBool(), true);
+        const QDBusArgument filters = portal.options["filters"].value<QDBusArgument>();
+        QCOMPARE(filters.currentSignature(), "a(sa(us))");
+        QString label, pattern;
+        uint type;
+        filters.beginArray(); filters.beginStructure(); filters >> label;
+        filters.beginArray(); filters.beginStructure(); filters >> type >> pattern;
+        filters.endStructure(); filters.endArray(); filters.endStructure(); filters.endArray();
+        QCOMPARE(label, "Markdown"); QCOMPARE(type, 0u); QCOMPARE(pattern, "*.md");
+
+        portal.alternatePath = "/org/freedesktop/portal/desktop/request/legacy";
+        QCOMPARE(FileDialog::choose(true, selected, "Markdown", {"*.md"}, &error), selected);
+        QCOMPARE(portal.method, "SaveFile");
+        QCOMPARE(portal.title, "Save File");
+        QCOMPARE(portal.options["current_name"].toString(), "æ.md");
+        QVERIFY2(error.isEmpty(), qPrintable(error));
+
+        portal.alternatePath.clear();
+        portal.respondBeforeReply = true;
+        portal.result = 1;
+        QVERIFY(FileDialog::choose(false, "/tmp", "Media", {"*.png", "*.mp4"}, &error).isEmpty());
+        QVERIFY(error.isEmpty()); // Cancellation is not an error.
+        portal.result = 0;
+        portal.selected = "https://example.org/image.png";
+        QVERIFY(FileDialog::choose(false, "/tmp", "Media", {"*.png"}, &error).isEmpty());
+        QCOMPARE(error, "Choose a local file.");
+        portal.result = 2;
+        QVERIFY(FileDialog::choose(false, "/tmp", "Media", {"*.png"}, &error).isEmpty());
+        QVERIFY(!error.isEmpty());
     }
     void followsDesktopTheme() {
         QTemporaryDir files;
@@ -135,6 +239,105 @@ class HypeTests : public QObject {
         QVERIFY(!missing.reopenLastPresentation());
         QVERIFY(missing.path().isEmpty());
         QCOMPARE(missing.source(), initial);
+    }
+    void incompleteSlideCodeKeepsFollowingSlides() {
+        QTemporaryDir files;
+        const QString path = files.path() + "/presentation.md";
+        const QString tail = "---\n# Keep this slide\n---\n# And this one\n";
+        write(path, "# Start\n---\n# Code goes here\n" + tail);
+        Deck deck;
+        QVERIFY(deck.loadPath(path));
+        deck.select(1);
+        deck.editSlide("```rust");
+        QVERIFY(deck.source().endsWith(tail));
+        deck.editSlide("```rust\nfn main() {}");
+        QVERIFY2(deck.source().endsWith(tail), "Editing an unfinished code fence deleted the rest of the presentation");
+        QCOMPARE(deck.count(), 4);
+        QVERIFY(!deck.savePath(path));
+        QFile unchanged(path);
+        QVERIFY(unchanged.open(QIODevice::ReadOnly));
+        QCOMPARE(unchanged.readAll(), ("# Start\n---\n# Code goes here\n" + tail).toUtf8());
+        deck.undo();
+        QCOMPARE(deck.count(), 4);
+        deck.redo();
+        QCOMPARE(deck.count(), 4);
+        deck.editSlide("```rust\nfn main() {}\n```");
+        QCOMPARE(deck.count(), 4);
+        QVERIFY(deck.source().endsWith(tail));
+        QVERIFY(deck.savePath(path));
+        Deck reopened;
+        QVERIFY(reopened.loadPath(path));
+        QCOMPARE(reopened.count(), 4);
+        QVERIFY(reopened.source().endsWith(tail));
+    }
+    void slideBoundariesSurviveIncompleteEdits() {
+        Deck deck;
+        const QString tail = "# Following code\n```ruby\nputs :hello\n```\n";
+        deck.editSource("# Start\n---\n```rust\nfn main() {}\n```\n---\n" + tail + "---\n# Last\n");
+        deck.select(1);
+        deck.editSlide("```rust\nfn main() {}\n``"); // Delete one closing backtick.
+        QCOMPARE(deck.count(), 4);
+        QCOMPARE(deck.slide(2), tail);
+        deck.select(2);
+        deck.editSlide(tail + "A caption");
+        QCOMPARE(deck.count(), 4);
+        QCOMPARE(deck.slide(3), "# Last\n");
+        deck.undo();
+        QCOMPARE(deck.slide(2), tail);
+        deck.select(1);
+        deck.duplicateSlide();
+        QCOMPARE(deck.count(), 5);
+        QCOMPARE(deck.slide(3).trimmed(), tail.trimmed());
+        deck.undo();
+        QCOMPARE(deck.count(), 4);
+        deck.chooseFont("Monospace");
+        deck.editSlide("~~~rust\nfn main() {}\n~~~");
+        QCOMPARE(deck.count(), 4);
+        QCOMPARE(deck.slide(2), tail);
+        QCOMPARE(deck.slide(3), "# Last\n");
+        QCOMPARE(parseDeck(deck.source()).slides.size(), 4);
+        // Source offsets count UTF-16 positions, not bytes; preserve CRLF tails.
+        deck.editSource("# 🍎\r\n---\r\n# Code\r\n---\r\n# café\r\n");
+        deck.select(1);
+        for (const QString &draft : {QString("~~~"), QString("~~~rust\nfn main() {}"),
+                                     QString("~~~rust\nfn main() {}\n~~~")}) {
+            deck.editSlide(draft);
+            QCOMPARE(deck.count(), 3);
+            QCOMPARE(deck.slide(2), "# café\r\n");
+        }
+    }
+    void savedVersionsAreRecoverable() {
+        QTemporaryDir files;
+        const QString path = files.path() + "/talk.md";
+        write(path, "# Original\n");
+        Deck deck;
+        QVERIFY(deck.loadPath(path));
+        deck.editSlide("# Updated");
+        QVERIFY(deck.savePath(path));
+        QDir backups(files.path() + "/.hype-backups");
+        auto names = backups.entryList(QDir::Files);
+        QCOMPARE(names.size(), 1);
+        QFile backup(backups.filePath(names.first()));
+        QVERIFY(backup.open(QIODevice::ReadOnly));
+        QCOMPARE(backup.readAll(), QByteArray("# Original\n"));
+        QVERIFY(deck.savePath(path));
+        QCOMPARE(backups.entryList(QDir::Files).size(), 1); // Unchanged saves don't churn history.
+        for (int i = 0; i < 22; ++i) {
+            deck.editSlide("# Revision " + QString::number(i));
+            QVERIFY(deck.savePath(path));
+        }
+        QCOMPARE(backups.entryList(QDir::Files).size(), 20);
+        const QString blocked = files.path() + "/blocked";
+        QVERIFY(QDir().mkpath(blocked));
+        write(blocked + "/talk.md", "# Keep me\n");
+        write(blocked + "/.hype-backups", "A file blocks backup creation");
+        QVERIFY(deck.loadPath(blocked + "/talk.md"));
+        deck.editSlide("# Replacement");
+        QVERIFY(!deck.savePath(deck.path()));
+        QFile original(deck.path());
+        QVERIFY(original.open(QIODevice::ReadOnly));
+        QCOMPARE(original.readAll(), QByteArray("# Keep me\n"));
+        QVERIFY(deck.dirty());
     }
     void fencesAndFrontMatter() {
         QString source = "---\ntitle: Test\n---\n\n# "
@@ -347,11 +550,13 @@ class HypeTests : public QObject {
         QApplication::clipboard()->setImage(image);
         QSignalSpy request(&d, &Deck::pasteRequested);
         QVERIFY(d.pasteMedia());
+        QTRY_VERIFY_WITH_TIMEOUT(!d.compressingImage(), 10000);
         QCOMPARE(request.size(), 1);
         d.cancelPaste();
         QCOMPARE(d.source(), before);
         QVERIFY(!QDir(tmp.path() + "/images").exists());
         QVERIFY(d.pasteMedia());
+        QTRY_VERIFY_WITH_TIMEOUT(!d.compressingImage(), 10000);
         QVERIFY(d.savePastedMedia("City at night.png").isEmpty());
         QCOMPARE(QImage(tmp.path() + "/images/City at night.png"), image);
         QCOMPARE(d.slide(0), first);
@@ -367,6 +572,7 @@ class HypeTests : public QObject {
         files->setImageData(image); // File-manager thumbnails must not replace the video.
         QApplication::clipboard()->setMimeData(files);
         QVERIFY(d.pasteMedia());
+        QTRY_VERIFY_WITH_TIMEOUT(!d.compressingImage(), 10000);
         QVERIFY(d.savePastedMedia("Demo").isEmpty());
         QFile video(tmp.path() + "/videos/Demo.webm");
         QVERIFY(video.open(QIODevice::ReadOnly));
@@ -376,6 +582,7 @@ class HypeTests : public QObject {
         raw->setData("video/mp4", "raw video bytes");
         QApplication::clipboard()->setMimeData(raw);
         QVERIFY(d.pasteMedia());
+        QTRY_VERIFY_WITH_TIMEOUT(!d.compressingImage(), 10000);
         QVERIFY(d.savePastedMedia("Second demo").isEmpty());
         QFile rawVideo(tmp.path() + "/videos/Second demo.mp4");
         QVERIFY(rawVideo.open(QIODevice::ReadOnly));
@@ -384,6 +591,71 @@ class HypeTests : public QObject {
         QCOMPARE(parseMedia(d.slideSource(), tmp.path()).file, "Second demo.mp4");
         QApplication::clipboard()->setText("ordinary text");
         QVERIFY(!d.pasteMedia());
+    }
+    void pastedImagesUse4kBudget() {
+        QTemporaryDir tmp;
+        Deck deck;
+        QVERIFY(deck.savePath(tmp.path() + "/talk.md"));
+        QImage original(4800, 3600, QImage::Format_ARGB32);
+        original.fill(QColor(30, 80, 150, 128));
+        for (bool span : {false, true}) {
+            deck.editSource(span ? "# Background image\n" : "");
+            QApplication::clipboard()->setImage(original);
+            QVERIFY(deck.pasteMedia());
+            QTRY_VERIFY_WITH_TIMEOUT(!deck.compressingImage(), 10000);
+            QVERIFY(deck.savePastedMedia(span ? "span" : "fit").isEmpty());
+            const auto media = parseMedia(deck.slideSource(), tmp.path());
+            const QImage saved(media.path);
+            QCOMPARE(saved.size(), span ? QSize(3840, 2880) : QSize(2880, 2160));
+            const QColor pixel = saved.pixelColor(100, 100);
+            QCOMPARE(pixel.alpha(), 128);
+            QVERIFY(qAbs(pixel.red() - 30) <= 1 && qAbs(pixel.green() - 80) <= 1 &&
+                    qAbs(pixel.blue() - 150) <= 1); // Premultiplied resampling rounds channels.
+            QVERIFY(QFileInfo(media.path).size() < 100000);
+        }
+        // Copied still files follow the same sizing, without altering the source.
+        const QString source = tmp.path() + "/original.png";
+        QVERIFY(original.save(source));
+        const qint64 originalBytes = QFileInfo(source).size();
+        auto files = new QMimeData;
+        files->setUrls({QUrl::fromLocalFile(source)});
+        QApplication::clipboard()->setMimeData(files);
+        deck.editSource("");
+        QVERIFY(deck.pasteMedia());
+        QTRY_VERIFY_WITH_TIMEOUT(!deck.compressingImage(), 10000);
+        QVERIFY(deck.savePastedMedia("copied").isEmpty());
+        QCOMPARE(QImage(parseMedia(deck.slideSource(), tmp.path()).path).size(), QSize(2880, 2160));
+        QCOMPARE(QFileInfo(source).size(), originalBytes);
+        QCOMPARE(QImage(source).size(), original.size());
+        // Never flatten animation while optimizing a copied image.
+        const QString animation = QFINDTESTDATA("fixtures/animated.webp");
+        files = new QMimeData;
+        files->setUrls({QUrl::fromLocalFile(animation)});
+        QApplication::clipboard()->setMimeData(files);
+        QVERIFY(deck.pasteMedia());
+        QTRY_VERIFY_WITH_TIMEOUT(!deck.compressingImage(), 10000);
+        QVERIFY(deck.savePastedMedia("animated").isEmpty());
+        QFile before(animation), after(tmp.path() + "/images/animated.webp");
+        QVERIFY(before.open(QIODevice::ReadOnly));
+        QVERIFY(after.open(QIODevice::ReadOnly));
+        QCOMPARE(after.readAll(), before.readAll());
+        QCOMPARE(imageSizeForCanvas(QSize(100, 200), QSize(3840, 2160), true), QSize(100, 200));
+    }
+    void losslessImageCompression() {
+        // Correlated noisy channels benefit from WebP's lossless channel transform.
+        QImage original(640, 480, QImage::Format_RGB32);
+        quint32 noise = 1;
+        for (int y = 0; y < original.height(); ++y)
+            for (int x = 0; x < original.width(); ++x) {
+                noise = noise * 1664525 + 1013904223;
+                original.setPixel(x, y, qRgb(noise >> 24, (noise >> 16) & 255, noise >> 24));
+            }
+        QString extension;
+        const QByteArray encoded = compressedImage(original, &extension);
+        QVERIFY(!encoded.isEmpty());
+        QCOMPARE(QImage::fromData(encoded).convertToFormat(QImage::Format_RGB32), original);
+        QCOMPARE(extension, QString("webp"));
+        QVERIFY(encoded.size() < original.sizeInBytes() * 3 / 4);
     }
     void pastedSlidesKeepBalancedSpacing() {
         QTemporaryDir tmp;
@@ -395,9 +667,11 @@ class HypeTests : public QObject {
         QApplication::clipboard()->setImage(image);
         d.addSlide();
         QVERIFY(d.pasteMedia());
+        QTRY_VERIFY_WITH_TIMEOUT(!d.compressingImage(), 10000);
         QVERIFY(d.savePastedMedia("first").isEmpty());
         d.addSlide();
         QVERIFY(d.pasteMedia());
+        QTRY_VERIFY_WITH_TIMEOUT(!d.compressingImage(), 10000);
         QVERIFY(d.savePastedMedia("second").isEmpty());
         d.addSlide();
         d.editSlide("# End");
@@ -426,6 +700,7 @@ class HypeTests : public QObject {
         image.fill(Qt::blue);
         QApplication::clipboard()->setImage(image);
         QVERIFY(d.pasteMedia());
+        QTRY_VERIFY_WITH_TIMEOUT(!d.compressingImage(), 10000);
         QVERIFY(d.savePastedMedia("../outside").contains("without folders"));
         QVERIFY(d.savePastedMedia("existing").contains("already exists"));
         QVERIFY(d.savePastedMedia("new name").isEmpty());
@@ -435,6 +710,7 @@ class HypeTests : public QObject {
         QVERIFY(existing.open(QIODevice::ReadOnly));
         QCOMPARE(existing.readAll(), QByteArray("keep existing"));
         QVERIFY(d.pasteMedia());
+        QTRY_VERIFY_WITH_TIMEOUT(!d.compressingImage(), 10000);
         d.editSlide("# Changed while naming media");
         QVERIFY(d.savePastedMedia("wrong slide").contains("slide changed"));
         QVERIFY(!QFile::exists(tmp.path() + "/images/wrong slide.png"));
@@ -447,6 +723,223 @@ class HypeTests : public QObject {
         QCOMPARE(withMedia(examples + "![fit](old.png)\nCaption", replacement),
                  examples + replacement + "\nCaption");
         QCOMPARE(withMedia(examples, replacement), examples + "\n" + replacement + "\n");
+    }
+    void asynchronousExport() {
+        const QString executable = QFINDTESTDATA("../build/hype");
+        QVERIFY(!executable.isEmpty());
+        QTemporaryDir tmp;
+        Deck deck(nullptr, executable);
+        QVERIFY(deck.savePath(tmp.path() + "/talk.md"));
+        deck.editSource("# Unsaved snapshot\n---\n# Second\n---\n# Third\n");
+        QSignalSpy finished(&deck, &Deck::exportFinished);
+        int ticks = 0, updates = 0;
+        QTimer heartbeat;
+        connect(&heartbeat, &QTimer::timeout, [&] { ++ticks; });
+        heartbeat.start(5);
+        connect(&deck, &Deck::exportChanged, [&] { ++updates; });
+        const QString pdfPath = tmp.path() + "/talk.pdf";
+        deck.startExport("pdf", pdfPath);
+        QVERIFY(deck.exporting());
+        QCOMPARE(finished.size(), 0);
+        // Further edits don't affect the in-flight snapshot.
+        deck.editSource("# Edited while exporting\n");
+        deck.startExport("pdf", tmp.path() + "/duplicate.pdf");
+        QTRY_COMPARE_WITH_TIMEOUT(finished.size(), 1, 15000);
+        QVERIFY(finished.last()[0].toBool());
+        QVERIFY(!deck.exporting() && !deck.exportFailed());
+        QVERIFY(ticks > 1 && updates > 2);
+        QCOMPARE(deck.exportProgress(), 1.0);
+        QVERIFY(!QFile::exists(tmp.path() + "/duplicate.pdf"));
+        QPdfDocument pdf;
+        QCOMPARE(pdf.load(pdfPath), QPdfDocument::Error::None);
+        QCOMPARE(pdf.pageCount(), 3);
+        QVERIFY(pdf.getAllText(0).text().contains("Unsaved snapshot"));
+        QCOMPARE(deck.source(), QString("# Edited while exporting\n"));
+        QVERIFY(deck.dirty());
+
+        const QString pptxPath = tmp.path() + "/talk.pptx";
+        deck.startExport("pptx", pptxPath);
+        QTRY_COMPARE_WITH_TIMEOUT(finished.size(), 2, 15000);
+        QVERIFY(finished.last()[0].toBool());
+        QFile pptx(pptxPath);
+        QVERIFY(pptx.open(QIODevice::ReadOnly));
+        const QByteArray original = pptx.readAll();
+        pptx.close();
+        QVERIFY(original.startsWith("PK"));
+
+        // Cancellation cannot damage an existing successful export.
+        deck.startExport("pptx", pptxPath);
+        deck.cancelExport();
+        QTRY_COMPARE_WITH_TIMEOUT(finished.size(), 3, 10000);
+        QVERIFY(!finished.last()[0].toBool());
+        QVERIFY(!deck.exporting() && !deck.exportFailed());
+        QCOMPARE(deck.exportStatus(), QString("Export cancelled"));
+        // Also cancel after the renderer has started reporting progress.
+        deck.editSource("# One\n---\n# Two\n---\n# Three\n");
+        auto cancelOnProgress = connect(&deck, &Deck::exportChanged, [&] {
+            if (deck.exporting() && deck.exportProgress() > 0) deck.cancelExport();
+        });
+        deck.startExport("pptx", pptxPath);
+        QTRY_COMPARE_WITH_TIMEOUT(finished.size(), 4, 10000);
+        disconnect(cancelOnProgress);
+        QVERIFY(!finished.last()[0].toBool());
+        deck.editSource("![](missing.png)");
+        deck.startExport("pptx", pptxPath);
+        QTRY_COMPARE_WITH_TIMEOUT(finished.size(), 5, 10000);
+        QVERIFY(!finished.last()[0].toBool());
+        QVERIFY(deck.exportFailed());
+        QVERIFY(deck.exportStatus().contains("missing.png"));
+        QVERIFY(pptx.open(QIODevice::ReadOnly));
+        QCOMPARE(pptx.readAll(), original);
+        QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+        QCOMPARE(QDir(tmp.path()).entryList({".hype-export-*"}, QDir::Dirs | QDir::Hidden).size(), 0);
+
+        Deck unavailable(nullptr, tmp.path() + "/missing-program");
+        QSignalSpy failed(&unavailable, &Deck::exportFinished);
+        unavailable.startExport("pdf", tmp.path() + "/failed.pdf");
+        QTRY_COMPARE(failed.size(), 1);
+        QVERIFY(!failed.last()[0].toBool());
+        QVERIFY(!unavailable.exporting() && unavailable.exportFailed());
+    }
+    void pasteCompressionProgress() {
+        if (!qEnvironmentVariableIsSet("HYPE_GUI_TESTS"))
+            QSKIP("Set HYPE_GUI_TESTS=1 with local multimedia access");
+        QTemporaryDir files;
+        Deck deck;
+        QVERIFY(deck.savePath(files.path() + "/talk.md"));
+        QQuickStyle::setStyle("Basic");
+        qmlRegisterType<SlideItem>("Hype", 1, 0, "SlideCanvas");
+        qmlRegisterType<AppTheme>("Hype", 1, 0, "AppTheme");
+        QQmlApplicationEngine engine;
+        engine.rootContext()->setContextProperty("deck", &deck);
+        engine.addImageProvider("slides", new Thumbnails(&deck));
+        engine.load(QUrl("qrc:/Main.qml"));
+        QVERIFY(!engine.rootObjects().isEmpty());
+        auto window = qobject_cast<QQuickWindow *>(engine.rootObjects()[0]);
+        auto progress = window->findChild<QObject *>("compressionDialog");
+        auto naming = window->findChild<QObject *>("pasteDialog");
+        QVERIFY(progress && naming);
+        QImage image(20, 12, QImage::Format_RGB32);
+        image.fill(Qt::red);
+        QApplication::clipboard()->setImage(image);
+        QSignalSpy requests(&deck, &Deck::pasteRequested);
+        QSignalSpy shown(progress, SIGNAL(opened()));
+
+        // Hold the worker queue to exercise the one-second delay deterministically,
+        // without relying on machine speed or a deliberately enormous image.
+        auto pool = QThreadPool::globalInstance();
+        const int threads = pool->maxThreadCount();
+        pool->setMaxThreadCount(1);
+        auto restore = qScopeGuard([&] { pool->setMaxThreadCount(threads); });
+        for (bool cancel : {false, true}) {
+            QSemaphore entered, release;
+            auto blocker = QtConcurrent::run([&] { entered.release(); release.acquire(); });
+            entered.acquire();
+            auto unblock = qScopeGuard([&] { release.release(); blocker.waitForFinished(); });
+            QVERIFY(deck.pasteMedia());
+            QVERIFY(deck.compressingImage());
+            QVERIFY(!progress->property("visible").toBool());
+            QTest::qWait(400);
+            QVERIFY(!progress->property("visible").toBool());
+            QTRY_VERIFY_WITH_TIMEOUT(progress->property("opened").toBool(), 1500);
+            // The GUI event loop remains available while the worker is pending.
+            QVERIFY(!naming->property("visible").toBool());
+            if (cancel) {
+                QVERIFY(QMetaObject::invokeMethod(progress, "close"));
+                QTRY_VERIFY(!deck.compressingImage());
+            }
+            release.release();
+            QTRY_VERIFY_WITH_TIMEOUT(!deck.compressingImage(), 5000);
+            if (!cancel) {
+                QTRY_VERIFY(naming->property("opened").toBool());
+                QCOMPARE(requests.size(), 1);
+                QVERIFY(!progress->property("visible").toBool());
+                QVERIFY(QMetaObject::invokeMethod(naming, "close"));
+                QTRY_VERIFY(!naming->property("visible").toBool());
+            } else {
+                pool->waitForDone();
+                QCoreApplication::processEvents();
+                QCOMPARE(requests.size(), 1); // Cancelled completion must not reopen it.
+                QVERIFY(!naming->property("visible").toBool());
+            }
+        }
+        const int slowShows = shown.size();
+        QVERIFY(deck.pasteMedia());
+        QTRY_VERIFY(naming->property("opened").toBool());
+        QCOMPARE(requests.size(), 2);
+        QCOMPARE(shown.size(), slowShows); // Fast compression never flashes the meter.
+        QVERIFY(QMetaObject::invokeMethod(naming, "close"));
+        QTRY_VERIFY(!naming->property("visible").toBool());
+        QVERIFY(!deck.dirty());
+        QVERIFY(!QDir(files.path() + "/images").exists());
+
+        // Changing the document while work is queued must not paste into a new slide.
+        QVERIFY(deck.pasteMedia());
+        deck.editSource("# Changed while compressing");
+        QTRY_VERIFY(!deck.compressingImage());
+        QCOMPARE(requests.size(), 2);
+        QVERIFY(!naming->property("visible").toBool());
+        QVERIFY(deck.status().contains("slide changed"));
+    }
+    void videoHoldsLastFrameAndReplays() {
+        if (!qEnvironmentVariableIsSet("HYPE_GUI_TESTS"))
+            QSKIP("Set HYPE_GUI_TESTS=1 with local multimedia access");
+        if (qEnvironmentVariable("QT_QUICK_BACKEND") == "software")
+            QSKIP("Video pixel capture requires QT_QUICK_BACKEND=rhi");
+        QTemporaryDir files;
+        QVERIFY(QDir().mkpath(files.path() + "/videos"));
+        QProcess ffmpeg;
+        ffmpeg.start("ffmpeg", {"-v", "error", "-f", "lavfi", "-i",
+            "color=c=blue:s=90x160:d=0.6", "-f", "lavfi", "-i",
+            "color=c=red:s=90x160:d=0.6", "-filter_complex", "[0:v][1:v]concat=n=2:v=1:a=0",
+            "-c:v", "libx264", "-pix_fmt", "yuv420p", files.path() + "/videos/demo.mp4"});
+        QVERIFY(ffmpeg.waitForFinished(30000));
+        QCOMPARE(ffmpeg.exitCode(), 0);
+        write(files.path() + "/talk.md", "![fit background=blur autoplay=false](demo.mp4)\n---\n# Next");
+        Deck deck;
+        QQuickStyle::setStyle("Basic");
+        qmlRegisterType<SlideItem>("Hype", 1, 0, "SlideCanvas");
+        qmlRegisterType<AppTheme>("Hype", 1, 0, "AppTheme");
+        QQmlApplicationEngine engine;
+        engine.rootContext()->setContextProperty("deck", &deck);
+        engine.addImageProvider("slides", new Thumbnails(&deck));
+        engine.load(QUrl("qrc:/Main.qml"));
+        QVERIFY(!engine.rootObjects().isEmpty());
+        auto window = qobject_cast<QQuickWindow *>(engine.rootObjects()[0]);
+        QVERIFY(deck.loadPath(files.path() + "/talk.md"));
+        auto player = window->findChild<QMediaPlayer *>("player");
+        auto output = window->findChild<QQuickItem *>("videoOutput");
+        QVERIFY(player && output && player->videoSink());
+        window->requestActivate();
+        QTRY_VERIFY(window->isActive());
+        QVERIFY(QMetaObject::invokeMethod(window, "togglePresent"));
+        auto frameColor = [&]() {
+            const QImage frame = player->videoSink()->videoFrame().toImage();
+            return frame.isNull() ? QColor() : frame.pixelColor(frame.width() / 2, frame.height() / 2);
+        };
+        QTest::keyClick(window, Qt::Key_Space);
+        QTRY_COMPARE(player->playbackState(), QMediaPlayer::PlayingState);
+        QTRY_VERIFY(frameColor().blue() > 240);
+        QTRY_COMPARE_WITH_TIMEOUT(player->mediaStatus(), QMediaPlayer::EndOfMedia, 10000);
+        QCOMPARE(player->playbackState(), QMediaPlayer::StoppedState);
+        QVERIFY(output->isVisible());
+        auto held = output->grabToImage();
+        QVERIFY(held);
+        QTRY_VERIFY(!held->image().isNull());
+        auto heldColor = held->image().pixelColor(held->image().width() / 2, held->image().height() / 2);
+        QVERIFY2(heldColor.red() > 240, qPrintable(heldColor.name()));
+        QTest::qWait(200);
+        held = output->grabToImage();
+        QTRY_VERIFY(!held->image().isNull());
+        QVERIFY(held->image().pixelColor(held->image().width() / 2, held->image().height() / 2).red() > 240);
+        QTest::keyClick(window, Qt::Key_Space);
+        QTRY_COMPARE(player->playbackState(), QMediaPlayer::PlayingState);
+        QTRY_VERIFY(frameColor().blue() > 240);
+        QVERIFY(player->position() < 600);
+        deck.select(1);
+        QTRY_COMPARE(player->playbackState(), QMediaPlayer::StoppedState);
+        QVERIFY(!output->isVisible());
+        QVERIFY(!player->videoSink()->videoFrame().isValid());
     }
     void animatedImages() {
         if (!qEnvironmentVariableIsSet("HYPE_GUI_TESTS"))
@@ -510,6 +1003,54 @@ class HypeTests : public QObject {
         QTRY_VERIFY(!animation->property("paused").toBool());
         QTest::keyClick(window, Qt::Key_Space);
         QTRY_VERIFY(animation->property("paused").toBool());
+    }
+    void typingCodeInVisualEditorKeepsTheDeck() {
+        if (!qEnvironmentVariableIsSet("HYPE_GUI_TESTS"))
+            QSKIP("Set HYPE_GUI_TESTS=1 with local graphics access");
+        QTemporaryDir files;
+        const QString path = files.path() + "/presentation.md";
+        const QString tail = "---\n# Following\n---\n# Last\n";
+        write(path, "# Start\n---\n\n" + tail);
+        Deck deck;
+        QVERIFY(deck.loadPath(path));
+        deck.select(1);
+        QQuickStyle::setStyle("Basic");
+        qmlRegisterType<SlideItem>("Hype", 1, 0, "SlideCanvas");
+        qmlRegisterType<AppTheme>("Hype", 1, 0, "AppTheme");
+        QQmlApplicationEngine engine;
+        engine.rootContext()->setContextProperty("deck", &deck);
+        engine.addImageProvider("slides", new Thumbnails(&deck));
+        engine.load(QUrl("qrc:/Main.qml"));
+        QVERIFY(!engine.rootObjects().isEmpty());
+        auto window = qobject_cast<QQuickWindow *>(engine.rootObjects().first());
+        auto editor = window->findChild<QQuickItem *>("slideEditor");
+        QVERIFY(editor);
+        editor->forceActiveFocus();
+        QTRY_VERIFY(editor->hasActiveFocus());
+        const QString code = "```rust\nfn main() {}\n```";
+        for (const QChar character : code) {
+            QKeyEvent event(QEvent::KeyPress, character == '\n' ? Qt::Key_Return : 0,
+                            Qt::NoModifier, QString(character));
+            QCoreApplication::sendEvent(window, &event);
+            QCOMPARE(deck.count(), 4);
+            QVERIFY(deck.source().endsWith(tail));
+        }
+        QCOMPARE(editor->property("text").toString(), code);
+        QCOMPARE(deck.slideText(), code);
+        QTest::keyClick(window, Qt::Key_S, Qt::ControlModifier);
+        QVERIFY(!deck.dirty());
+        Deck reopened;
+        QVERIFY(reopened.loadPath(path));
+        QCOMPARE(reopened.count(), 4);
+        QVERIFY(reopened.source().endsWith(tail));
+        // Complete slide breaks pasted into this editor resync its visible range.
+        editor->setProperty("text", "# First pasted\n---\n# Second pasted");
+        QCOMPARE(deck.count(), 5);
+        QCOMPARE(editor->property("text").toString(), "# First pasted");
+        editor->setProperty("text", "# First pasted and edited");
+        QCOMPARE(deck.count(), 5);
+        QCOMPARE(deck.slide(2).trimmed(), "# Second pasted");
+        QVERIFY(deck.source().endsWith(tail));
     }
     void visualOperations() {
         if (!qEnvironmentVariableIsSet("HYPE_GUI_TESTS"))
@@ -960,6 +1501,32 @@ class HypeTests : public QObject {
                                           Q_ARG(int, d.sourcePosition())));
         double cursorBottom = rect.bottom() - flick->property("contentY").toDouble();
         QVERIFY(cursorBottom > 0 && cursorBottom <= flick->property("height").toDouble());
+
+        // Adding a visible slide must preserve the sidebar viewport, including
+        // when the model resets well below the start of a long presentation.
+        window->setProperty("markdown", false);
+        d.editSource(many);
+        d.select(15);
+        QTest::qWait(60);
+        list->setProperty("contentY", list->property("originY").toDouble() + 12 * slideStep);
+        QTest::qWait(60);
+        const double sidebarY = list->property("contentY").toDouble() - list->property("originY").toDouble();
+        QVERIFY(QMetaObject::invokeMethod(window, "addSlide"));
+        QTest::qWait(100);
+        QCOMPARE(d.selected(), 16);
+        QCOMPARE(list->property("contentY").toDouble() - list->property("originY").toDouble(), sidebarY);
+
+        // When insertion falls below the viewport, reveal only the overflow.
+        const int lastVisible = int((sidebarY + list->height() - 108) / slideStep);
+        d.select(lastVisible);
+        QTest::qWait(60);
+        const double beforeInsert = list->property("contentY").toDouble() - list->property("originY").toDouble();
+        const double expected = qMax(beforeInsert, (lastVisible + 1) * slideStep + 108 - list->height());
+        QVERIFY(QMetaObject::invokeMethod(window, "addSlide"));
+        QTest::qWait(100);
+        const double afterInsert = list->property("contentY").toDouble() - list->property("originY").toDouble();
+        QVERIFY(qAbs(afterInsert - expected) < 1);
+        QVERIFY(afterInsert - beforeInsert <= slideStep);
         window->setProperty("allowClose", true);
         window->close();
     }
@@ -1018,7 +1585,7 @@ class HypeTests : public QObject {
         if (!qEnvironmentVariableIsSet("HYPE_BENCHMARK"))
             QSKIP("Set HYPE_BENCHMARK=1 for trial rendering timings");
         Deck d;
-        QString path = QFINDTESTDATA("../trials/rails-world-2025/presentation.md");
+        QString path = qEnvironmentVariable("HYPE_BENCHMARK_DECK", QFINDTESTDATA("../trials/rails-world-2025/presentation.md"));
         QVERIFY(d.loadPath(path));
         Thumbnails provider(&d);
         QVector<QString> ids;
@@ -1034,6 +1601,166 @@ class HypeTests : public QObject {
             qInfo() << (pass ? "Cached" : "Cold") << ids.size()
                     << "trial thumbnails:" << timer.elapsed() << "ms";
         }
+        for (int pass = 0; pass < 2; ++pass) {
+            QElapsedTimer timer;
+            timer.start();
+            for (const QString &id : ids.mid(0, 10))
+                QVERIFY(!provider.requestImage(id, nullptr, QSize(1920, 1080)).isNull());
+            qInfo() << (pass ? "Cached" : "Cold") << "first ten full previews:" << timer.elapsed() << "ms";
+        }
+        int nextImage = 10;
+        while (nextImage < d.count()) {
+            const auto media = parseMedia(d.slide(nextImage), d.baseDir());
+            if (!media.file.isEmpty() && !media.video) break;
+            ++nextImage;
+        }
+        QVERIFY(nextImage < d.count());
+        d.select(nextImage - 1);
+        QTest::qWait(750);
+        QElapsedTimer warmed;
+        warmed.start();
+        QVERIFY(!provider.requestImage(d.renderId(nextImage), nullptr, QSize(1920, 1080)).isNull());
+        qInfo() << "Prefetched next full preview:" << warmed.nsecsElapsed() / 1000 << "microseconds";
+    }
+    void previewCacheSharedAcrossWorkers() {
+        Deck deck;
+        deck.editSource("# Shared preview cache");
+        Thumbnails provider(&deck);
+        const auto id = deck.renderId(0);
+        const auto first = provider.requestImage(id, nullptr, QSize(340, 192));
+        auto future = QtConcurrent::run([&] { return provider.requestImage(id, nullptr, QSize(340, 192)); });
+        future.waitForFinished();
+        QCOMPARE(future.result().cacheKey(), first.cacheKey());
+        deck.editSource("# Updated preview cache");
+        const auto updated = provider.requestImage(deck.renderId(0), nullptr, QSize(340, 192));
+        QVERIFY(updated != first);
+        // Larger rendering should retain the cached sidebar image.
+        QVERIFY(!provider.requestImage(id, nullptr, QSize(1920, 1080)).isNull());
+        QCOMPARE(provider.requestImage(id, nullptr, QSize(340, 192)).cacheKey(), first.cacheKey());
+    }
+    void rapidImageNavigation() {
+        if (!qEnvironmentVariableIsSet("HYPE_GUI_TESTS"))
+            QSKIP("Set HYPE_GUI_TESTS=1 with local multimedia access");
+        QTemporaryDir tmp;
+        QVERIFY(QDir().mkpath(tmp.path() + "/images"));
+        QString source;
+        for (int i = 0; i < 18; ++i) {
+            QImage image(1920, 1080, QImage::Format_RGB32);
+            image.fill(QColor::fromHsv(i * 19, 230, 210));
+            QVERIFY(image.save(QString("%1/images/%2.png").arg(tmp.path()).arg(i)));
+            if (i) source += "\n---\n";
+            source += QString("![span](%1.png)").arg(i);
+        }
+        write(tmp.path() + "/talk.md", source);
+        Deck deck;
+        QVERIFY(deck.loadPath(tmp.path() + "/talk.md"));
+        QQuickStyle::setStyle("Basic");
+        qmlRegisterType<SlideItem>("Hype", 1, 0, "SlideCanvas");
+        qmlRegisterType<AppTheme>("Hype", 1, 0, "AppTheme");
+        QQmlApplicationEngine engine;
+        engine.rootContext()->setContextProperty("deck", &deck);
+        engine.addImageProvider("slides", new Thumbnails(&deck));
+        engine.load(QUrl("qrc:/Main.qml"));
+        QVERIFY(!engine.rootObjects().isEmpty());
+        auto window = qobject_cast<QQuickWindow *>(engine.rootObjects()[0]);
+        auto preview = window->findChild<QQuickItem *>("slidePreview");
+        QVERIFY(preview);
+        for (int i = 0; i < 40; ++i) {
+            deck.select((i * 7) % 18);
+            QTest::qWait(5);
+        }
+        deck.select(17);
+        QTRY_COMPARE_WITH_TIMEOUT(preview->property("status").toInt(), 1, 5000);
+        auto capture = preview->grabToImage();
+        QTRY_VERIFY(!capture->image().isNull());
+        QCOMPARE(capture->image().pixelColor(capture->image().width() / 2, capture->image().height() / 2),
+                 QColor::fromRgb(QColor::fromHsv(17 * 19, 230, 210).rgb()));
+        // Let any earlier requests finish: they must not replace the chosen slide.
+        QTest::qWait(250);
+        capture = preview->grabToImage();
+        QTRY_VERIFY(!capture->image().isNull());
+        QCOMPARE(capture->image().pixelColor(capture->image().width() / 2, capture->image().height() / 2),
+                 QColor::fromRgb(QColor::fromHsv(17 * 19, 230, 210).rgb()));
+    }
+    void imageTextOverlaysEveryLayout() {
+        QTemporaryDir tmp;
+        QVERIFY(QDir().mkpath(tmp.path() + "/images"));
+        QImage portrait(80, 160, QImage::Format_RGB32);
+        portrait.fill(Qt::blue);
+        QVERIFY(portrait.save(tmp.path() + "/images/portrait.png"));
+        Deck deck;
+        QVERIFY(deck.savePath(tmp.path() + "/talk.md"));
+        Thumbnails provider(&deck);
+        for (const QString &layout : {QString("fit"), QString("background=blur"),
+                                     QString("fit background=auto"), QString("left"), QString("right")}) {
+            const QString mediaSource = "![" + layout + "](portrait.png)";
+            deck.editSlide(mediaSource + "\n\n# Headline");
+            const auto media = parseMedia(deck.slideSource(), deck.baseDir());
+            QVERIFY(!media.span);
+            QCOMPARE(media.overlay, 0.25);
+            QCOMPARE(mediaRect(media), mediaRect(parseMedia(mediaSource, deck.baseDir())));
+            const auto rendered = provider.requestImage(deck.renderId(0), nullptr, QSize(320, 180));
+            int top = 180, bottom = 0;
+            for (int y = 0; y < rendered.height(); ++y)
+                for (int x = 0; x < rendered.width(); ++x) {
+                    const auto color = rendered.pixelColor(x, y);
+                    if (color.red() > 220 && color.green() > 220 && color.blue() > 220) {
+                        top = qMin(top, y);
+                        bottom = qMax(bottom, y);
+                    }
+                }
+            QVERIFY(top > 50 && top < bottom && bottom < 130); // Centered over the picture.
+            const auto overlay = provider.requestImage(deck.renderId(0) + "/overlay", nullptr, QSize(320, 180));
+            QCOMPARE(overlay.pixelColor(0, 0).alpha(), 64);
+        }
+        deck.editSlide("![background=blur](portrait.png)\n\n# Headline");
+        QVERIFY(deck.exportPdf(tmp.path() + "/talk.pdf"));
+        QPdfDocument pdf;
+        QCOMPARE(pdf.load(tmp.path() + "/talk.pdf"), QPdfDocument::Error::None);
+        const auto page = pdf.render(0, QSize(320, 180));
+        const auto background = page.pixelColor(0, 0);
+        QCOMPARE(background.red(), 0);
+        QCOMPARE(background.green(), 0);
+        QVERIFY(qAbs(background.blue() - 191) <= 1); // PDF transparency rounding.
+        deck.editSlide("![fit overlay=0](portrait.png)\n\n# Headline");
+        QCOMPARE(parseMedia(deck.slideSource(), deck.baseDir()).overlay, 0.0);
+    }
+    void picturesSoftenOnlyBehindText() {
+        QTemporaryDir tmp;
+        QVERIFY(QDir().mkpath(tmp.path() + "/images"));
+        QImage picture(1920, 1080, QImage::Format_RGB32);
+        picture.fill(Qt::black);
+        {
+            QPainter painter(&picture);
+            painter.fillRect(960, 0, 960, 1080, Qt::white);
+        }
+        const QString path = tmp.path() + "/images/picture.png";
+        QVERIFY(picture.save(path));
+        Deck deck;
+        QVERIFY(deck.savePath(tmp.path() + "/talk.md"));
+        Thumbnails provider(&deck);
+        for (const QString &layout : {QString("span"), QString("fit"), QString("fit background=blur")}) {
+            const QString source = "![" + layout + " overlay=0](picture.png)";
+            deck.editSlide(source);
+            const auto sharp = provider.requestImage(deck.renderId(0), nullptr, QSize(1920, 1080));
+            QVERIFY(sharp.pixelColor(958, 300).red() < 5);
+            deck.editSlide(source + "\n# A sharp headline");
+            const auto soft = provider.requestImage(deck.renderId(0), nullptr, QSize(1920, 1080));
+            const int edge = soft.pixelColor(958, 300).red();
+            QVERIFY(edge > 10 && edge < 240); // Only a narrow transition at the picture's edge.
+            QCOMPARE(soft.pixelColor(940, 300), QColor(Qt::black));
+            QCOMPARE(soft.pixelColor(980, 300), QColor(Qt::white));
+        }
+        QVERIFY(deck.exportPdf(tmp.path() + "/talk.pdf"));
+        QPdfDocument pdf;
+        QCOMPARE(pdf.load(tmp.path() + "/talk.pdf"), QPdfDocument::Error::None);
+        const auto exported = pdf.render(0, QSize(3840, 2160));
+        const int edge = exported.pixelColor(1916, 600).red();
+        QVERIFY(edge > 10 && edge < 240);
+        QCOMPARE(QImage(path), picture); // Rendering never changes the source asset.
+        const auto cached = softenedImage(picture, picture.size());
+        const auto reused = QtConcurrent::run([&] { return softenedImage(picture, picture.size()); }).result();
+        QCOMPARE(cached.cacheKey(), reused.cacheKey());
     }
     void blurredImageBackground() {
         QTemporaryDir tmp;
@@ -1049,7 +1776,7 @@ class HypeTests : public QObject {
         Deck deck;
         QVERIFY(deck.loadPath(tmp.path() + "/talk.md"));
         const QString original = deck.source();
-        deck.setImageBackground("blur");
+        deck.setMediaBackground("blur");
         const auto media = parseMedia(deck.slideSource(), deck.baseDir());
         QVERIFY(media.error.isEmpty());
         QCOMPARE(media.background, QString("blur"));
@@ -1085,6 +1812,77 @@ class HypeTests : public QObject {
         deck.editSlide("![fit background=blur](transparent.png)");
         QCOMPARE(provider.requestImage(deck.renderId(0), nullptr, QSize(320, 180)).pixelColor(0, 0),
                  deck.background());
+    }
+    void blurredVideoBackground() {
+        QTemporaryDir tmp;
+        QVERIFY(QDir().mkpath(tmp.path() + "/images"));
+        QVERIFY(QDir().mkpath(tmp.path() + "/videos"));
+        QProcess ffmpeg;
+        ffmpeg.start("ffmpeg", {"-v", "error", "-f", "lavfi", "-i",
+            "color=c=blue:s=90x160:d=0.2", "-c:v", "libx264", "-pix_fmt", "yuv420p",
+            tmp.path() + "/videos/demo.mp4"});
+        QVERIFY(ffmpeg.waitForFinished(30000));
+        QCOMPARE(ffmpeg.exitCode(), 0);
+        QImage poster(90, 160, QImage::Format_RGB32);
+        poster.fill(Qt::green);
+        QVERIFY(poster.save(tmp.path() + "/images/poster.png"));
+        const QString example = "```markdown\n![span](example.mp4)\n```\n\n";
+        write(tmp.path() + "/talk.md", example +
+            "![span loop muted autoplay=false poster=poster.png alt=\"A span of time\"](demo.mp4)");
+        Deck deck;
+        QVERIFY(deck.loadPath(tmp.path() + "/talk.md"));
+        const QString original = deck.source();
+        deck.setMediaBackground("blur");
+        QVERIFY(deck.slideSource().startsWith(example));
+        QVERIFY(deck.slideSource().contains("alt=\"A span of time\""));
+        auto media = parseMedia(deck.slideSource(), deck.baseDir());
+        QVERIFY(media.error.isEmpty());
+        QVERIFY(media.video && !media.span && media.loop && media.muted && !media.autoplay);
+        QCOMPARE(media.background, QString("blur"));
+        QCOMPARE(media.poster, tmp.path() + "/images/poster.png");
+        deck.undo();
+        QCOMPARE(deck.source(), original);
+
+        // A custom poster remains in the foreground; the blur comes from the video.
+        deck.editSlide("![fit background=blur poster=poster.png](demo.mp4)");
+        Thumbnails provider(&deck);
+        auto rendered = provider.requestImage(deck.renderId(0), nullptr, QSize(320, 180));
+        const QColor blue = rendered.pixelColor(0, 0);
+        QVERIFY(blue.blue() > 245 && blue.red() < 10 && blue.green() < 10);
+        QCOMPARE(rendered.pixelColor(160, 90), QColor(Qt::green));
+        const QString firstFrame = ensurePoster(media.path, deck.baseDir());
+        QVERIFY(!firstFrame.isEmpty());
+        const auto modified = QFileInfo(firstFrame).lastModified();
+        // Rendering again reuses the extracted first frame, independent of playback.
+        QCOMPARE(ensurePoster(media.path, deck.baseDir()), firstFrame);
+        QCOMPARE(QFileInfo(firstFrame).lastModified(), modified);
+
+        QVERIFY(deck.exportPdf(tmp.path() + "/talk.pdf"));
+        QPdfDocument pdf;
+        QCOMPARE(pdf.load(tmp.path() + "/talk.pdf"), QPdfDocument::Error::None);
+        const auto page = pdf.render(0, QSize(320, 180));
+        QVERIFY(page.pixelColor(0, 0).blue() > 245);
+        QCOMPARE(page.pixelColor(160, 90), QColor(Qt::green));
+        deck.editSlide("![span loop poster=poster.png](demo.mp4)");
+        deck.matchImageBackground(true);
+        media = parseMedia(deck.slideSource(), deck.baseDir());
+        QVERIFY(media.video && !media.span && media.loop);
+        QCOMPARE(media.background, QString("auto"));
+        rendered = provider.requestImage(deck.renderId(0), nullptr, QSize(320, 180));
+        QVERIFY(rendered.pixelColor(0, 0).blue() > 245);
+        QVERIFY(rendered.pixelColor(0, 0).green() < 10);
+        QCOMPARE(rendered.pixelColor(160, 90), QColor(Qt::green));
+        QVERIFY(deck.exportPdf(tmp.path() + "/matched.pdf"));
+        QPdfDocument matched;
+        QCOMPARE(matched.load(tmp.path() + "/matched.pdf"), QPdfDocument::Error::None);
+        QVERIFY(matched.render(0, QSize(320, 180)).pixelColor(0, 0).blue() > 245);
+        deck.editSlide("![fit background=blur](demo.mp4)");
+        rendered = provider.requestImage(deck.renderId(0), nullptr, QSize(320, 180));
+        QVERIFY(rendered.pixelColor(0, 0).blue() > 245);
+        QVERIFY(rendered.pixelColor(160, 90).blue() > 245);
+        deck.setMediaBackground("theme");
+        rendered = provider.requestImage(deck.renderId(0), nullptr, QSize(320, 180));
+        QCOMPARE(rendered.pixelColor(0, 0), deck.background());
     }
     void backgroundAndCache() {
         QTemporaryDir tmp;
@@ -1165,6 +1963,76 @@ class HypeTests : public QObject {
         highlightCode(plain, palette);
         QCOMPARE(plain.toPlainText(), original);
     }
+    void headlineFormattingStaysLocal() {
+        Deck deck;
+        const QStringList markedWords{"_Ruby_", "*Ruby*", "**Ruby**", "~~Ruby~~", "`Ruby`"};
+        for (int level : {1, 2, 3, 4, 5, 6}) {
+            for (const auto &word : markedWords) {
+                QTextDocument doc;
+                layoutSlideText(doc, QString(level, '#') + " No more " + word + " programmers,\n" +
+                    QString(level, '#') + " just programmers\n\nPlain text", deck.palette(), 60, 1660, true, false);
+                auto formatAt = [&](int position) {
+                    QTextCursor cursor(&doc);
+                    cursor.setPosition(position);
+                    cursor.movePosition(QTextCursor::NextCharacter, QTextCursor::KeepAnchor);
+                    return cursor.charFormat();
+                };
+                const auto plain = doc.toPlainText();
+                const int firstHeadingEnd = plain.indexOf('\n');
+                const int ruby = plain.indexOf("Ruby");
+                const int expectedSize = qRound(60 * (level == 1 ? 1.8 : 1.25));
+                for (int i = 0; i < firstHeadingEnd; ++i) {
+                    const auto format = formatAt(i);
+                    QVERIFY2(format.fontWeight() >= QFont::Bold, qPrintable(word + " at " + QString::number(i)));
+                    QCOMPARE(format.intProperty(QTextFormat::FontPixelSize), expectedSize);
+                    QCOMPARE(format.fontUnderline(), word == "_Ruby_" && i >= ruby && i < ruby + 4);
+                    QCOMPARE(format.fontItalic(), word == "*Ruby*" && i >= ruby && i < ruby + 4);
+                    QCOMPARE(format.fontStrikeOut(), word == "~~Ruby~~" && i >= ruby && i < ruby + 4);
+                }
+                const auto nextHeading = formatAt(plain.indexOf("just"));
+                QCOMPARE(nextHeading.intProperty(QTextFormat::FontPixelSize), expectedSize);
+                QVERIFY(nextHeading.fontWeight() >= QFont::Bold);
+                // Qt's relative heading size can override FontPixelSize during
+                // layout. Check the actual fonts used to draw each glyph run.
+                doc.documentLayout()->documentSize();
+                const auto referenceBlock = doc.findBlock(plain.indexOf("just"));
+                const auto referenceRuns = referenceBlock.layout()->glyphRuns(0, referenceBlock.length() - 1);
+                QVERIFY2(!referenceRuns.isEmpty(), qPrintable(QString("Heading %1, %2, block [%3], position %4, text [%5]")
+                    .arg(level).arg(word, referenceBlock.text()).arg(plain.indexOf("just")).arg(plain)));
+                const auto reference = referenceRuns.first().rawFont();
+                for (const auto &run : doc.begin().layout()->glyphRuns(0, doc.begin().length() - 1)) {
+                    QCOMPARE(run.rawFont().pixelSize(), reference.pixelSize());
+                    QCOMPARE(run.rawFont().weight(), reference.weight());
+                }
+                const auto body = formatAt(plain.indexOf("Plain"));
+                QCOMPARE(body.fontWeight(), QFont::Normal);
+                QCOMPARE(body.intProperty(QTextFormat::FontPixelSize), 60);
+            }
+        }
+    }
+    void rustSyntaxColors() {
+        Deck deck;
+        for (const QString &language : {QString("rust"), QString("rs"), QString("Rust")}) {
+            QTextDocument doc;
+            doc.setMarkdown("```" + language + "\nfn main() {\n  // café\n"
+                            "  let answer: u32 = 42;\n  println!(\"héllo\");\n}\n```\n");
+            const QString original = doc.toPlainText();
+            highlightCode(doc, deck.palette());
+            QCOMPARE(doc.toPlainText(), original);
+            auto colorAt = [&](const QString &token) {
+                QTextCursor cursor(&doc);
+                cursor.setPosition(original.indexOf(token));
+                cursor.movePosition(QTextCursor::NextCharacter, QTextCursor::KeepAnchor);
+                return cursor.charFormat().foreground().color();
+            };
+            QCOMPARE(colorAt("fn"), QColor(deck.palette()["magenta"].toString()));
+            QCOMPARE(colorAt("let"), QColor(deck.palette()["magenta"].toString()));
+            QCOMPARE(colorAt("u32"), QColor(deck.palette()["yellow"].toString()));
+            QCOMPARE(colorAt("42"), QColor(deck.palette()["red"].toString()));
+            QCOMPARE(colorAt("héllo"), QColor(deck.palette()["green"].toString()));
+            QCOMPARE(colorAt("café"), QColor(deck.palette()["dark_foreground"].toString()));
+        }
+    }
     void plainLineBreaks() {
         Deck deck;
         auto render = [&](const QString &source) {
@@ -1184,6 +2052,59 @@ class HypeTests : public QObject {
         cr.replace("\n", "\r");
         QCOMPARE(render(cr), render(explicitBreaks));
         QCOMPARE(render("`one`\n`two`"), render("`one`\\\n`two`"));
+    }
+    void pdfPreserves4kDetailAndReusesImages() {
+        QTemporaryDir tmp;
+        QVERIFY(QDir().mkpath(tmp.path() + "/images"));
+        QImage detail(3840, 2160, QImage::Format_RGB32);
+        for (int y = 0; y < detail.height(); ++y) {
+            auto row = reinterpret_cast<QRgb *>(detail.scanLine(y));
+            for (int x = 0; x < detail.width(); ++x)
+                row[x] = x % 2 ? qRgb(255, 0, 0) : qRgb(0, 0, 255);
+        }
+        QVERIFY(detail.save(tmp.path() + "/images/detail.png"));
+        write(tmp.path() + "/talk.md", "![span](detail.png)\n");
+        Deck deck;
+        QVERIFY(deck.loadPath(tmp.path() + "/talk.md"));
+        QVERIFY(deck.exportPdf(tmp.path() + "/one.pdf"));
+        deck.editSource("![span](detail.png)\n---\n![span](detail.png)\n");
+        QVERIFY(deck.exportPdf(tmp.path() + "/two.pdf"));
+        QPdfDocument pdf;
+        QCOMPARE(pdf.load(tmp.path() + "/two.pdf"), QPdfDocument::Error::None);
+        QCOMPARE(pdf.pageCount(), 2);
+        const auto rendered = pdf.render(0, QSize(3840, 2160));
+        QVERIFY(!rendered.isNull());
+        // One-pixel red/blue stripes catch both the old 2560px cap and JPEG loss.
+        for (int x = 100; x < 300; ++x)
+            QCOMPARE(rendered.pixelColor(x, 100), detail.pixelColor(x, 100));
+        QVERIFY(QFileInfo(tmp.path() + "/two.pdf").size() <
+                QFileInfo(tmp.path() + "/one.pdf").size() + 5000);
+        QFile file(tmp.path() + "/two.pdf");
+        QVERIFY(file.open(QIODevice::ReadOnly));
+        const auto bytes = file.readAll();
+        QVERIFY(!bytes.contains("/DCTDecode"));
+        QVERIFY(bytes.contains("/Width 3840"));
+        QVERIFY(bytes.contains("/Height 2160"));
+        // A portrait in Span must embed only its visible center, not hidden pixels.
+        QImage portrait(2160, 3840, QImage::Format_RGB32);
+        portrait.fill(Qt::blue);
+        {
+            QPainter painter(&portrait);
+            painter.fillRect(0, 1300, 2160, 1240, Qt::red);
+        }
+        QVERIFY(portrait.save(tmp.path() + "/images/portrait.png"));
+        deck.editSource("![span](portrait.png)\n");
+        QVERIFY(deck.exportPdf(tmp.path() + "/crop.pdf"));
+        QFile cropped(tmp.path() + "/crop.pdf");
+        QVERIFY(cropped.open(QIODevice::ReadOnly));
+        const auto croppedBytes = cropped.readAll();
+        QVERIFY(croppedBytes.contains("/Width 2160"));
+        QVERIFY(croppedBytes.contains("/Height 1215"));
+        QPdfDocument croppedPdf;
+        QCOMPARE(croppedPdf.load(tmp.path() + "/crop.pdf"), QPdfDocument::Error::None);
+        const auto croppedPage = croppedPdf.render(0, QSize(384, 216));
+        QCOMPARE(croppedPage.pixelColor(190, 1), QColor(Qt::red));
+        QCOMPARE(croppedPage.pixelColor(190, 214), QColor(Qt::red));
     }
     void renderAndPdf() {
         QTemporaryDir tmp;

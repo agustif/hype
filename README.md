@@ -24,6 +24,8 @@ Use **Ctrl+Enter** or right-click a slide to add a slide after the selection. Dr
 
 Save with **Ctrl+S**. Hype remembers the last directory you opened or saved to.
 
+Hype keeps the previous 20 saved versions in `.hype-backups/` beside your presentation. To recover one, copy its `.bak` file to a new `.md` file and open it. Unfinished code fences must be closed before saving; your edits stay in the editor until then.
+
 ## Write your slides
 
 Separate slides with `---`, with a blank line on either side:
@@ -58,13 +60,17 @@ end
 ```
 ````
 
-Headlines are big by default. Quotes, lists, tables, and inline `code` work too. Ordinary line breaks stay visible on the slide. Code blocks fit the slide and use syntax highlighting when you specify a language, such as `ruby`, `javascript`, `bash`, or `json`.
+Headlines are big by default. Quotes, lists, tables, and inline `code` work too. Ordinary line breaks stay visible on the slide. Code blocks fit the slide and use syntax highlighting when you specify a language, such as `ruby`, `rust`, `javascript`, `bash`, or `json`.
 
 The single-slide editor hides the blank lines around slide separators, leaving just your content to edit.
 
 ## Add images and video
 
 Paste an image or a copied image/video file with **Ctrl+V**. Hype asks for a name, saves the file, and adds it to the selected slide. Pasting onto a slide that already has media replaces that media while keeping the text. You can also drag a file onto the preview or use **+ Image / video**.
+
+Pasted still images are sized for a 4K slide without upscaling. Fitted images stay within 3840 × 2160; spanning images retain enough resolution to fill that area without discarding the parts outside the crop. Hype chooses a lossless PNG or WebP, keeping an existing file when it is already smaller and needs no resizing. Original files, videos, animated images, and SVGs are left intact.
+
+Compression runs in the background. If it takes longer than a second, a progress bar appears over the slide; you can cancel the paste or wait for the filename prompt.
 
 Media lives beside the Markdown file:
 
@@ -94,22 +100,26 @@ Use just the filename; Hype finds the right directory:
 ![](demo.mp4)
 ```
 
-A lone image fits without cropping. An image with a headline becomes a background. Videos fit the slide and play once when you reach them during a presentation.
+A lone image fits without cropping. Text on an image slide is always overlaid, with white lettering, subtle darkening, and a very light blur of the picture for readability. The text stays sharp, and pictures without text stay unblurred. An image with a headline spans by default; `fit` or `background=blur` keeps the whole image visible beneath the text. Videos fit the slide and play once when you reach them during a presentation.
 
 Use the buttons below the preview or put layout options inside the brackets:
 
 | Markdown | Result |
 | --- | --- |
-| `![fit](photo.jpg)` | Show the whole image, with any headline above it |
+| `![fit](photo.jpg)` | Show the whole image, with text overlaid |
 | `![span](photo.jpg)` | Fill the slide, cropping as needed |
-| `![left](photo.jpg)` | Put the image beside text on the left |
-| `![right](photo.jpg)` | Put the image beside text on the right |
+| `![left](photo.jpg)` | Put the image on the left, with text overlaid |
+| `![right](photo.jpg)` | Put the image on the right, with text overlaid |
 | `![loop muted](demo.mp4)` | Loop a video without sound |
 | `![autoplay=false](demo.mp4)` | Wait for Space to play the video |
 
 For images that leave space around them, Hype matches the background to the image’s edge color when possible. Choose **Background → Use theme color** to override it, or specify a color: `![fit background=#ffffff](diagram.png)`.
 
 Choose **Background → Blurred image** to fill the slide with a stretched, blurred copy behind the sharp fitted image: `![fit background=blur](portrait.jpg)`. The same background appears in PDF and PowerPoint exports. Animated images use their first frame for the blurred background.
+
+For videos, choose **Background → Blurred first frame**, or write `![fit background=blur](portrait.mp4)`. The video plays over a still blur of its first frame, even when you specify a different poster image. Choosing blur also switches spanning media to fit so the background is visible.
+
+**Background → Match image edges** also works with videos: `![fit background=auto](portrait.mp4)`. It samples the edges of the first frame and keeps that background color during playback, even with a custom poster. Selecting it switches spanning videos to fit.
 
 Animated WebP and GIF images play inline in the preview and while presenting. Use the usual image syntax, such as `![](demo.webp)`, with the file in `images/`. Space pauses or resumes animations while presenting; PowerPoint exports automatically convert them to embedded MP4 videos, preserving the slide layout and playback settings. PDF exports capture their first frame.
 
@@ -127,9 +137,15 @@ Colors and the font choice are saved in the Markdown file. Install the same font
 
 Click **Present** or press **Ctrl+Space** (or **F5**) to toggle fullscreen presentation. Use the arrows to navigate, Space to play or pause video, and Escape to return to editing.
 
+Finished videos hold their last frame. Press Space again to replay from the beginning.
+
 Choose **Export → PDF** or **PowerPoint** to share your presentation. Both exports are built into Hype. PowerPoint renders slides and converted animations at 4K (3840 × 2160). Slides preserve the rendered appearance rather than exposing editable text and shapes; the receiving computer does not need your fonts installed. Videos are embedded, and animated WebP/GIF images are converted to MP4 automatically without changing the original files. PDF captures still slides.
 
-For PowerPoint video, use H.264 MP4 with optional AAC audio. Use `fit` for videos that aren’t 16:9. Video autoplay and looping may vary between presentation apps; playback in Microsoft PowerPoint has not yet been verified.
+Export runs in the background. The bottom bar shows progress through rendering, video conversion, and packaging, with a Cancel button. You can keep editing; the export uses the presentation as it was when you started. Failed or cancelled exports leave an existing file intact.
+
+PDF keeps text as vectors and sizes embedded images for their visible area at 4K, omitting unused pixels outside spanning crops. Images use lossless compression to preserve fine detail. Photo-heavy PDFs can be larger than JPEG-compressed exports because they avoid additional compression artifacts.
+
+PowerPoint export automatically converts other video formats, including WebM, to H.264 MP4 with AAC audio, leaving your originals untouched. Compatible MP4s are embedded directly. Use `fit` for videos that aren’t 16:9. Video autoplay and looping may vary between presentation apps; playback in Microsoft PowerPoint has not yet been verified.
 
 ## Keyboard shortcuts
 
@@ -160,7 +176,7 @@ The mouse wheel over the sidebar selects the previous or next slide. Home/End ju
 
 ## Run from source
 
-To build Hype yourself, install a C++17 compiler, make, Qt 6.8 or newer, FFmpeg, and GNU source-highlight; see [the package definition](pkgbuild/PKGBUILD) for dependencies. Then:
+To build Hype yourself, install a C++17 compiler, make, Qt 6.9 or newer, FFmpeg, and GNU source-highlight; see [the package definition](pkgbuild/PKGBUILD) for dependencies. Then:
 
 ```sh
 ./bin/build

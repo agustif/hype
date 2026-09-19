@@ -1,5 +1,6 @@
 #include "renderer.h"
 #include "syntax.h"
+#include "images.h"
 #include <QAbstractTextDocumentLayout>
 #include <QCache>
 #include <QCryptographicHash>
@@ -9,6 +10,10 @@
 #include <QFile>
 #include <QFileInfo>
 #include <QImageReader>
+#include <QMutex>
+#include <QPointer>
+#include <QTimer>
+#include <QTemporaryFile>
 #include <QPainter>
 #include <QProcess>
 #include <QRegularExpression>
@@ -18,6 +23,23 @@
 #include <QTextTable>
 
 static QRegularExpression mediaRe(R"(!\[([^\]]*)\]\((?:<([^>]+)>|([^\s)]+))\))");
+namespace {
+class ImageCache {
+    QMutex mutex;
+    QCache<QString, QImage> images;
+  public:
+    explicit ImageCache(int kilobytes) : images(kilobytes) {}
+    QImage get(const QString &key) {
+        QMutexLocker lock(&mutex);
+        auto image = images.object(key);
+        return image ? *image : QImage();
+    }
+    void put(const QString &key, const QImage &image) {
+        QMutexLocker lock(&mutex);
+        images.insert(key, new QImage(image), qMax(1, int(image.sizeInBytes() / 1024)));
+    }
+};
+}
 static QString outsideCode(QString source, bool maskInline = true) {
     int position = 0, fenceLength = 0;
     QChar fence;
@@ -159,7 +181,10 @@ Media parseMedia(const QString &source, const QString &base) {
         result.error = "Choose side placement or span";
     if (fit && span)
         result.error = "Choose either span or fit";
-    result.overlay = result.span && !result.text.trimmed().isEmpty() ? 0.25 : 0;
+    // A background choice implies fitting unless span was explicitly requested.
+    if (!span && (result.background == "blur" || result.background == "auto"))
+        result.span = false;
+    result.overlay = (!result.video || result.span) && !result.text.trimmed().isEmpty() ? 0.25 : 0;
     if (!explicitOverlay.isEmpty()) {
         bool ok;
         double opacity = explicitOverlay.toDouble(&ok);
@@ -192,14 +217,20 @@ QString ensurePoster(const QString &video, const QString &base) {
     if (QFile::exists(path))
         return path;
     QDir().mkpath(base + "/images");
+    QTemporaryFile poster(base + "/images/.hype-poster-XXXXXX.jpg");
+    if (!poster.open()) return {};
+    poster.close();
     QProcess ffmpeg;
     ffmpeg.start("ffmpeg", {"-v", "error", "-y", "-i", video, "-frames:v", "1", "-vf",
-                            "scale=1280:-2", path});
+                            "scale=1280:-2", poster.fileName()});
     if (!ffmpeg.waitForFinished(30000) || ffmpeg.exitCode() != 0) {
         ffmpeg.kill();
         ffmpeg.waitForFinished();
         return {};
     }
+    // Parallel thumbnail/preview requests must never read a half-written poster.
+    if (!QFile::exists(path) && !QFile::rename(poster.fileName(), path) && !QFile::exists(path))
+        return {};
     return path;
 }
 QStringList slideProblems(const QString &source, const QString &base) {
@@ -224,63 +255,89 @@ QStringList slideProblems(const QString &source, const QString &base) {
         errors << "Use one media item per slide (combine artwork before importing)";
     return errors;
 }
-static QImage loadedImage(const QString &path) {
-    static thread_local QCache<QString, QImage> cache(256 * 1024);
+static QImage loadedImage(const QString &path, QSize canvas, bool span) {
+    static ImageCache cache(256 * 1024);
     const QFileInfo info(path);
     QString key = path + QString::number(info.lastModified().toMSecsSinceEpoch()) + ":" +
-                  QString::number(info.size());
-    if (auto *image = cache.object(key))
-        return *image;
-    QImageReader reader(path);
-    reader.setAutoTransform(true);
-    QSize size = reader.size();
-    if (size.width() > 2560 || size.height() > 2560)
-        reader.setScaledSize(size.scaled(2560, 2560, Qt::KeepAspectRatio));
-    QImage image = reader.read();
+                  QString::number(info.size()) + ":" + QString::number(canvas.width()) + "x" +
+                  QString::number(canvas.height()) + (span ? ":span" : ":fit");
+    if (const auto image = cache.get(key); !image.isNull())
+        return image;
+    QImage image = readSizedImage(path, canvas, span);
+    if (span && !image.isNull()) {
+        // Embed only the visible center crop, especially in PDF. Keep originals
+        // intact so switching between Fit and Span remains reversible.
+        QSize crop = image.size().scaled(canvas, Qt::KeepAspectRatioByExpanding);
+        const double scale = double(image.width()) / crop.width();
+        const QSize visible(qRound(canvas.width() * scale), qRound(canvas.height() * scale));
+        if (visible != image.size())
+            image = image.copy((image.width() - visible.width()) / 2,
+                               (image.height() - visible.height()) / 2,
+                               visible.width(), visible.height());
+    }
     if (!image.isNull())
-        cache.insert(key, new QImage(image), qMax(1, int(image.sizeInBytes() / 1024)));
+        cache.put(key, image);
     return image;
 }
-static QImage blurredBackground(const QImage &image) {
-    // Blur at a small, fixed resolution, then scale smoothly with the slide.
-    // Cache per decoded image so editing text or resizing never repeats the work.
-    static thread_local QCache<qint64, QImage> cache(16 * 1024);
-    const qint64 key = image.cacheKey();
-    if (auto *cached = cache.object(key))
-        return *cached;
-    QImage blurred = image.scaled(320, 180, Qt::IgnoreAspectRatio, Qt::SmoothTransformation)
-                         .convertToFormat(QImage::Format_ARGB32_Premultiplied);
-    constexpr int radius = 8, diameter = radius * 2 + 1;
-    // Three separable box passes approximate a Gaussian, with clamped edges to
-    // avoid dark borders. Average premultiplied channels to preserve transparency.
+static QImage boxBlur(QImage image, int radius) {
+    image = image.convertToFormat(QImage::Format_ARGB32_Premultiplied);
+    const int diameter = radius * 2 + 1;
+    // Three separable box passes approximate a Gaussian. Clamp the edges and
+    // average premultiplied channels so transparent pictures keep clean edges.
     for (int pass = 0; pass < 6; ++pass) {
         const bool horizontal = pass % 2 == 0;
-        const int length = horizontal ? blurred.width() : blurred.height();
-        const int lines = horizontal ? blurred.height() : blurred.width();
-        QImage output(blurred.size(), blurred.format());
+        const int length = horizontal ? image.width() : image.height();
+        const int lines = horizontal ? image.height() : image.width();
+        QImage output(image.size(), image.format());
+        const auto *input = reinterpret_cast<const QRgb *>(image.constBits());
+        auto *pixels = reinterpret_cast<QRgb *>(output.bits());
+        const int stride = horizontal ? 1 : image.width();
         for (int line = 0; line < lines; ++line) {
+            const int offset = horizontal ? line * image.width() : line;
             auto pixel = [&](int position) {
-                position = qBound(0, position, length - 1);
-                return blurred.pixel(horizontal ? position : line, horizontal ? line : position);
+                return input[offset + qBound(0, position, length - 1) * stride];
             };
             int r = 0, g = 0, b = 0, a = 0;
             auto add = [&](QRgb color, int sign) {
                 r += sign * qRed(color); g += sign * qGreen(color);
                 b += sign * qBlue(color); a += sign * qAlpha(color);
             };
-            for (int offset = -radius; offset <= radius; ++offset)
-                add(pixel(offset), 1);
+            for (int i = -radius; i <= radius; ++i) add(pixel(i), 1);
             for (int position = 0; position < length; ++position) {
-                output.setPixel(horizontal ? position : line, horizontal ? line : position,
-                                qRgba(r / diameter, g / diameter, b / diameter, a / diameter));
+                pixels[offset + position * stride] = qRgba(r / diameter, g / diameter, b / diameter, a / diameter);
                 add(pixel(position - radius), -1);
                 add(pixel(position + radius + 1), 1);
             }
         }
-        blurred = output;
+        image = output;
     }
-    cache.insert(key, new QImage(blurred), int(blurred.sizeInBytes() / 1024));
+    return image;
+}
+static QImage blurredBackground(const QImage &image) {
+    static ImageCache cache(16 * 1024);
+    const QString key = QString::number(image.cacheKey());
+    QImage blurred = cache.get(key);
+    if (blurred.isNull()) {
+        blurred = boxBlur(image.scaled(320, 180, Qt::IgnoreAspectRatio, Qt::SmoothTransformation), 8);
+        cache.put(key, blurred);
+    }
     return blurred;
+}
+QImage softenedImage(const QImage &image, const QSizeF &slideSize) {
+    // A roughly two-pixel softness at 1080p, scaled with the picture at 4K.
+    // Text is painted afterwards and stays sharp. Share the cache across preview
+    // workers so changing a headline doesn't blur the same picture again.
+    if (image.isNull() || slideSize.isEmpty()) return image;
+    const int radius = qRound(2.0 * image.width() / slideSize.width());
+    if (radius == 0) return image;
+    static ImageCache cache(64 * 1024);
+    const QString key = QString::number(image.cacheKey()) + '/' + QString::number(radius);
+    QImage softened = cache.get(key);
+    if (softened.isNull()) {
+        softened = boxBlur(image, radius);
+        cache.put(key, softened);
+    }
+    return softened;
 }
 static QString slideProperty(const QString &source, const QString &key) {
     QRegularExpression re("<!--\\s*hype:[\\s\\S]*?\\b" + key + "=\"([^\"]*)\"[\\s\\S]*?-->");
@@ -296,7 +353,7 @@ static QString preserveLineBreaks(QString markdown) {
     }
     return lines.join('\n');
 }
-static void textDocument(QTextDocument &doc, const QString &markdown, const QVariantMap &palette,
+void layoutSlideText(QTextDocument &doc, const QString &markdown, const QVariantMap &palette,
                          qreal fontSize, qreal width, bool centered, bool code) {
     QFont font(code ? QString("JetBrains Mono")
                     : palette.value("font", "JetBrains Mono").toString());
@@ -338,6 +395,14 @@ static void textDocument(QTextDocument &doc, const QString &markdown, const QVar
             f.setPixelSize(qRound(fontSize * (level == 1 ? 1.8 : level ? 1.25 : 1.0)));
             cf.setProperty(QTextFormat::FontPixelSize, f.pixelSize());
             cf.setFontFamilies({font.family()});
+            // Qt drops both heading weight and its relative size at inline
+            // formatting boundaries. The relative size overrides FontPixelSize
+            // during layout, so restore both to preserve the existing heading
+            // appearance, while keeping underline/italic/etc. local to each run.
+            if (level) {
+                cf.setFontWeight(QFont::Bold);
+                cf.setProperty(QTextFormat::FontSizeAdjustment, 4 - level);
+            }
             QColor color(palette["foreground"].toString());
             if (fragment.charFormat().fontWeight() >= QFont::Bold && !level)
                 color = QColor(palette["accent"].toString());
@@ -363,7 +428,7 @@ QRectF mediaRect(const Media &media) {
     if (!media.side.isEmpty())
         return QRectF(media.side == "left" ? 60 : 980, 60, 880, 960);
     return media.span ? QRectF(0, 0, 1920, 1080)
-                      : (media.text.trimmed().isEmpty() ? QRectF(70, 50, 1780, 980)
+                      : (!media.video || media.text.trimmed().isEmpty() ? QRectF(70, 50, 1780, 980)
                                                         : QRectF(100, 280, 1720, 730));
 }
 void paintSlide(QPainter *p, const QRectF &target, const QString &source, const QString &base,
@@ -390,20 +455,28 @@ void paintSlide(QPainter *p, const QRectF &target, const QString &source, const 
         QString path =
             media.video ? (media.poster.isEmpty() ? ensurePoster(media.path, base) : media.poster)
                         : media.path;
-        QImage image = loadedImage(path);
-        if (!overlayOnly && !media.span && media.background == "blur" && !image.isNull())
-            p->drawImage(QRectF(0, 0, 1920, 1080), blurredBackground(image));
-        if (!media.video && !media.span && media.background != "theme" &&
+        const QRectF rect = mediaRect(media);
+        const QSize pixels = p->deviceTransform().mapRect(rect).size().toSize();
+        QImage image = loadedImage(path, pixels, media.span);
+        // Video backgrounds use the first frame, even with a custom poster.
+        const QImage backdrop = media.video && !media.span && !media.poster.isEmpty() &&
+            (media.background == "blur" || media.background == "auto")
+            ? loadedImage(ensurePoster(media.path, base), QSize(320, 180), false) : image;
+        if (!overlayOnly && !media.span && media.background == "blur") {
+            if (!backdrop.isNull())
+                p->drawImage(QRectF(0, 0, 1920, 1080), blurredBackground(backdrop));
+        }
+        if ((!media.video || !media.background.isEmpty()) && !media.span && media.background != "theme" &&
             (bg.isEmpty() || !media.background.isEmpty())) {
             QColor color(media.background);
-            if ((media.background.isEmpty() || media.background == "auto") && !image.isNull()) {
+            if ((media.background.isEmpty() || media.background == "auto") && !backdrop.isNull()) {
                 // Quantized edge votes ignore transparent pixels and tolerate compression noise.
                 QMap<int, QVector<QColor>> votes;
                 for (int i = 0; i < 64; ++i) {
-                    int x = i * (image.width() - 1) / 63, y = i * (image.height() - 1) / 63;
-                    for (QPoint point : {QPoint(x, 0), QPoint(x, image.height() - 1), QPoint(0, y),
-                                         QPoint(image.width() - 1, y)}) {
-                        QColor c = image.pixelColor(point);
+                    int x = i * (backdrop.width() - 1) / 63, y = i * (backdrop.height() - 1) / 63;
+                    for (QPoint point : {QPoint(x, 0), QPoint(x, backdrop.height() - 1), QPoint(0, y),
+                                         QPoint(backdrop.width() - 1, y)}) {
+                        QColor c = backdrop.pixelColor(point);
                         if (c.alpha() < 240)
                             continue;
                         votes[(c.red() / 16) * 256 + (c.green() / 16) * 16 + c.blue() / 16].append(
@@ -438,10 +511,6 @@ void paintSlide(QPainter *p, const QRectF &target, const QString &source, const 
             }
         }
 
-        const QRectF rect = mediaRect(media);
-        if (!media.side.isEmpty()) {
-            area = QRectF(media.side == "left" ? 1040 : 100, 90, 780, 900);
-        }
         if (!overlayOnly && !backgroundOnly && !image.isNull()) {
             QSizeF scaled = image.size();
             scaled.scale(rect.size(),
@@ -451,14 +520,14 @@ void paintSlide(QPainter *p, const QRectF &target, const QString &source, const 
                         scaled);
             p->save();
             p->setClipRect(rect);
-            p->drawImage(dest, image);
+            p->drawImage(dest, !media.video && !text.isEmpty() ? softenedImage(image, dest.size()) : image);
             p->restore();
         } else if (!overlayOnly && !backgroundOnly) {
             p->setPen(QColor(palette["accent"].toString()));
             p->setFont(QFont("sans", 24));
             p->drawText(rect, Qt::AlignCenter, "Missing media\n" + media.file);
         }
-        if (media.span) {
+        if (!media.video || media.span) {
             if (!backgroundOnly)
                 p->fillRect(QRectF(0, 0, 1920, 1080), QColor(0, 0, 0, qRound(media.overlay * 255)));
             if (fg.isEmpty() && !text.isEmpty())
@@ -477,7 +546,7 @@ void paintSlide(QPainter *p, const QRectF &target, const QString &source, const 
         bool list = text.contains(
             QRegularExpression("^\\s*(?:[-*+] |[0-9]+[.)] )", QRegularExpression::MultilineOption));
         bool table = text.contains(QRegularExpression("\\|[ :|-]+\\|"));
-        bool centered = !(code || quote || list || table || !media.side.isEmpty());
+        bool centered = !(code || quote || list || table);
         const QString alignment = slideProperty(source, "alignment");
         if (alignment == "left")
             centered = false;
@@ -486,22 +555,22 @@ void paintSlide(QPainter *p, const QRectF &target, const QString &source, const 
         bool stack = (text.contains('\n') || text.contains('\r')) && !text.startsWith('#') &&
                      !quote && !list && !code;
         qreal low = 8, high = code ? 56 : quote ? 64 : list ? 72 : table ? 60 : stack ? 128 : 76;
-        if (!media.file.isEmpty() && !media.span && media.side.isEmpty())
+        if (media.video && !media.span)
             high = 48;
         QTextDocument doc;
-        textDocument(doc, text, palette, high, area.width(), centered, code);
+        layoutSlideText(doc, text, palette, high, area.width(), centered, code);
         bool fits = doc.size().height() <= area.height() && doc.idealWidth() <= area.width() + 1;
         if (fits)
             low = high;
         for (int iteration = 0; !fits && iteration < 9; ++iteration) {
             qreal size = (low + high) / 2;
-            textDocument(doc, text, palette, size, area.width(), centered, code);
+            layoutSlideText(doc, text, palette, size, area.width(), centered, code);
             if (doc.size().height() <= area.height() && doc.idealWidth() <= area.width() + 1)
                 low = size;
             else
                 high = size;
         }
-        textDocument(doc, text, palette, low, area.width(), centered, code);
+        layoutSlideText(doc, text, palette, low, area.width(), centered, code);
         highlightCode(doc, palette);
         if (low < 24 && warning)
             *warning = "Text fits below 24px on a 1080p slide";
@@ -537,7 +606,22 @@ void SlideItem::paint(QPainter *p) {
         paintSlide(p, boundingRect(), m_deck->slideSource(), m_deck->baseDir(), m_deck->palette(),
                    nullptr, m_overlayOnly);
 }
-QImage Thumbnails::requestImage(const QString &id, QSize *size, const QSize &requested) {
+static ImageCache &slideCache(const QSize &dimensions) {
+    // Full previews must not evict the much smaller sidebar thumbnails.
+    static ImageCache thumbnails(32 * 1024), previews(128 * 1024);
+    return dimensions.width() <= 400 ? thumbnails : previews;
+}
+static QString slideCacheKey(const QString &id, const QSize &dimensions) {
+    return id + QString::number(dimensions.width()) + "x" + QString::number(dimensions.height());
+}
+static QImage renderedSlide(const QString &id, QSize *size, const QSize &requested) {
+    const QSize dimensions = requested.isValid() ? requested : QSize(320, 180);
+    auto &renders = slideCache(dimensions);
+    const QString key = slideCacheKey(id, dimensions);
+    if (const auto cached = renders.get(key); !cached.isNull()) {
+        if (size) *size = cached.size();
+        return cached;
+    }
     QByteArray bytes =
         QByteArray::fromBase64(id.section('/', 0, 0).toLatin1(), QByteArray::Base64UrlEncoding);
     QDataStream stream(bytes);
@@ -546,23 +630,88 @@ QImage Thumbnails::requestImage(const QString &id, QSize *size, const QSize &req
     stream >> source >> base >> palette;
     if (stream.status() != QDataStream::Ok)
         return {};
-    QSize dimensions = requested.isValid() ? requested : QSize(320, 180);
-    static thread_local QCache<QString, QImage> renders(128 * 1024);
-    QString key =
-        id + QString::number(dimensions.width()) + "x" + QString::number(dimensions.height());
-    if (auto cached = renders.object(key)) {
-        if (size)
-            *size = cached->size();
-        return *cached;
-    }
     QImage image(dimensions, QImage::Format_ARGB32_Premultiplied);
     image.fill(Qt::transparent);
     QPainter p(&image);
     paintSlide(&p, image.rect(), source, base, palette, nullptr, id.endsWith("/overlay"),
                id.endsWith("/background"));
     p.end();
-    renders.insert(key, new QImage(image), qMax(1, int(image.sizeInBytes() / 1024)));
+    renders.put(key, image);
     if (size)
         *size = image.size();
     return image;
+}
+
+namespace {
+class SlideResponse : public QQuickImageResponse {
+    QImage m_image;
+    std::atomic_bool m_cancelled = false;
+  public:
+    void cancel() override { m_cancelled = true; }
+    void complete(const QImage &image) {
+        if (!m_cancelled) m_image = image;
+        emit finished();
+    }
+    void render(const QString &id, const QSize &size) {
+        if (!m_cancelled) m_image = renderedSlide(id, nullptr, size);
+        emit finished();
+    }
+    QQuickTextureFactory *textureFactory() const override {
+        return QQuickTextureFactory::textureFactoryForImage(m_image);
+    }
+};
+}
+
+Thumbnails::Thumbnails(Deck *deck) {
+    m_thumbnails.setMaxThreadCount(2);
+    m_previews.setMaxThreadCount(2);
+    m_cached.setMaxThreadCount(1);
+    auto timer = new QTimer(this);
+    timer->setInterval(60);
+    timer->setSingleShot(true);
+    connect(deck, &Deck::changed, this, [this, timer] {
+        ++*m_generation;
+        timer->start();
+    });
+    connect(timer, &QTimer::timeout, this, [this, deck = QPointer<Deck>(deck)] {
+        if (!deck) return;
+        const auto generation = m_generation;
+        const auto current = generation->load();
+        for (int offset : {1, -1, 2, -2, 3, -3}) {
+            const int index = deck->selected() + offset;
+            if (index < 0 || index >= deck->count()) continue;
+            // Do not start video decoding or animation playback speculatively.
+            const auto media = parseMedia(deck->slide(index), deck->baseDir());
+            QImageReader reader(media.path);
+            if (media.video || (!media.path.isEmpty() && reader.supportsAnimation() && reader.imageCount() > 1)) continue;
+            const QString id = deck->renderId(index);
+            m_previews.start([generation, current, id] {
+                if (generation->load() == current)
+                    renderedSlide(id, nullptr, QSize(1920, 1080));
+            }, -1);
+        }
+    });
+    timer->start();
+}
+Thumbnails::~Thumbnails() {
+    ++*m_generation;
+    m_thumbnails.waitForDone();
+    m_previews.waitForDone();
+    m_cached.waitForDone();
+}
+QImage Thumbnails::requestImage(const QString &id, QSize *size, const QSize &requested) {
+    return renderedSlide(id, size, requested);
+}
+QQuickImageResponse *Thumbnails::requestImageResponse(const QString &id, const QSize &requested) {
+    auto response = new SlideResponse;
+    const QSize dimensions = requested.isValid() ? requested : QSize(320, 180);
+    const QImage cached = slideCache(dimensions).get(slideCacheKey(id, dimensions));
+    if (!cached.isNull()) {
+        // A ready image must not wait behind unrelated decoding or prefetches.
+        m_cached.start([response, cached] { response->complete(cached); });
+        return response;
+    }
+    auto &pool = requested.isValid() && requested.width() <= 400 ? m_thumbnails : m_previews;
+    pool.start([response, id, requested] { response->render(id, requested); }, 1);
+    return response;
 }

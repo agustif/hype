@@ -100,7 +100,7 @@ end
 ![](demo.mp4)
 ````
 
-Defaults do most of the work: a heading becomes a large centered headline; a lone image fits without cropping; an image with a heading becomes a full-bleed background with centered white text and a 25% black overlay, regardless of their order in the source. A lone video fits without cropping, starts once when its slide is entered during presentation, and stops on leaving. Videos stay paused in the editor. Generate a poster automatically from the first frame. A heading with a video sits above it. A lone code block fills the safe content area; an optional heading reserves title space. A heading followed by one short paragraph becomes a headline with a smaller subtitle; longer body text stays in the title/body layout. Quotes receive a readable, left-aligned text layout without a decorative quote bar; a following paragraph starting with an em dash is the smaller attribution. A slide containing only a paragraph with explicit hard breaks becomes a centered stack of large lines, without bullets. Lists retain their bullets or numbering and align left. Simple Markdown tables use evenly spaced columns and quiet rules, with a shared fitted size. Explicit Markdown hard breaks control headline lines.
+Defaults do most of the work: a heading becomes a large centered headline; a lone image fits without cropping; an image with a heading becomes a full-bleed background with centered white text and a 25% black overlay, regardless of their order in the source. Whenever text overlays a picture, apply a very light blur to that picture (roughly two pixels at 1080p, scaled for 4K), keeping the text sharp. Apply it consistently in previews, presentation, PDF, and PowerPoint, including animated pictures; never modify the source asset. A lone video fits without cropping, starts once when its slide is entered during presentation, and stops on leaving. Videos stay paused in the editor. Generate a poster automatically from the first frame. A heading with a video sits above it. A lone code block fills the safe content area; an optional heading reserves title space. A heading followed by one short paragraph becomes a headline with a smaller subtitle; longer body text stays in the title/body layout. Quotes receive a readable, left-aligned text layout without a decorative quote bar; a following paragraph starting with an em dash is the smaller attribution. A slide containing only a paragraph with explicit hard breaks becomes a centered stack of large lines, without bullets. Lists retain their bullets or numbering and align left. Simple Markdown tables use evenly spaced columns and quiet rules, with a shared fitted size. Explicit Markdown hard breaks control headline lines.
 
 Only write directives when overriding a default. Put media directives inside `[]`, separated by spaces:
 
@@ -114,8 +114,8 @@ Only write directives when overriding a default. Put media directives inside `[]
 
 - Empty brackets use the inferred layout and playback defaults.
 - `span` fills the slide edge-to-edge, cropping centrally as needed. A heading overlays it. Applies to images and videos.
-- `fit` preserves the entire image or video without cropping, with any heading above it. This also overrides the automatic image-background layout.
-- `left` or `right` places an image beside the slide text, fitting the image into half the slide. Added after trialing the 2024 server-phobia sequence; this is a fixed two-part layout, not freeform positioning.
+- `fit` preserves the entire image or video without cropping. Image text remains overlaid; video headings reserve title space. This overrides automatic image spanning.
+- `left` or `right` fits an image into the corresponding half of the slide. Image text remains overlaid on the slide.
 - `loop` and `muted` enable video looping and mute its audio. Both default off. `autoplay=false` starts playback on Space instead of slide entry.
 - `overlay=0.4` overrides the black scrim opacity, from zero to one. Default to 0.25 with overlaid text, zero without it. `poster=demo.jpg` selects a custom video poster from `images/`.
 
@@ -143,9 +143,9 @@ Freeze these format rules before implementing the editor:
 | Simple Markdown table, optional heading | Comparison or metrics columns, fitted together |
 | One image | Contained image |
 | One image plus heading, optional body | Full-bleed image with centered white text and 25% black overlay |
-| Image with `fit`, plus heading | Contained image with heading above |
+| Image with `fit` or `background=blur`, plus text | Contained image with white text overlaid and 25% darkening |
 | Image or video with `span` | Full-bleed media, with any heading overlaid |
-| Image with `left` or `right` | Image beside text in a fixed half-slide layout |
+| Image with `left` or `right` | Image positioned in a fixed half-slide area, with text overlaid |
 | One fenced code block, optional heading | Fitted code with optional title space |
 | Blockquote, optional attribution paragraph | Quote with attribution below |
 | One video reference, optional heading | Contained video with optional title space; play once on entering during presentation |
@@ -155,9 +155,11 @@ Freeze these format rules before implementing the editor:
 
 File picker, clipboard image paste, and drag/drop all copy assets into the deck's `images/` or `videos/` directory and insert filename-only media references. Ask for a presentation directory before the first asset import into an unsaved deck. Retain readable names, reuse identical files, and suffix conflicting names without overwriting. Import failures leave the Markdown untouched.
 
+Pasted still images use a 3840 × 2160 pixel budget: fit within it, or retain enough pixels to fill it when spanning. Never upscale or destructively crop the saved asset. Compare lossless PNG and WebP encodings; retain existing files if smaller and already within budget. Keep animations and SVG files intact. PDF retains vector text, losslessly embeds images at their visible 4K size, and strips hidden spanning pixels from the export only. Lossless photographs may be larger than the previous JPEG-compressed PDF output.
+
 Deleting a slide leaves its files in place. Avoid automatic media cleanup in version one. A moved presentation folder must still open and export without the original source files. Broken paths show an actionable placeholder and block export until resolved.
 
-Use Qt Multimedia for playback and ffprobe/ffmpeg for media information and poster generation, following Omacut's process wrappers. Require MP4 with H.264/AAC for embedded PowerPoint video in version one; diagnose incompatible files and ask for a compatible replacement. Defer automatic transcoding. Generated poster images live in `images/` under a reserved name derived from the video content hash; resolve or regenerate them automatically without adding a poster attribute to the Markdown. Explicitly chosen posters override this convention. Runtime thumbnails live in the application cache.
+Use Qt Multimedia for playback and ffprobe/ffmpeg for media information and poster generation, following Omacut's process wrappers. Embed compatible H.264/AAC MP4 files directly in PowerPoint; convert other video formats to temporary MP4 copies during export without changing the originals. Report invalid or unreadable videos with a slide number. Generated poster images live in `images/` under a reserved name derived from the video content hash; resolve or regenerate them automatically without adding a poster attribute to the Markdown. Explicitly chosen posters override this convention. Runtime thumbnails live in the application cache.
 
 ## Scaling and themes
 
@@ -169,9 +171,11 @@ Discover installed themes using Omarchy's actual theme locations: `$OMARCHY_PATH
 
 Read each theme's `colors.toml`. Map background, foreground, accent, and semantic colors to slides and code highlighting. Theme selection previews the entire deck. Choosing a presentation theme must not change the desktop theme.
 
-For fitted images, `background=blur` stretches a blurred copy across the slide behind the sharp image. Offer it in the Background menu alongside edge matching and theme color. Cache the blur and use the same rendering for previews and exports; animated images use a still first-frame background.
+For fitted images and videos, `background=blur` stretches a blurred copy across the slide behind the sharp foreground. Offer it in the Background menu alongside edge matching and theme color; choosing blur switches spanning media to fit. Cache the blur and use the same rendering for previews and exports. Videos and animated images use a still first-frame background; a custom video poster does not replace that background. Video edge matching (`background=auto`) likewise samples the first frame and keeps that color during playback; choosing it switches spanning videos to fit.
 
-The app interface follows the active desktop theme independently, watching its colors file and theme symlink for changes. Palette and font icons open the presentation pickers; the footer uses Omawrite's save/open icons. The title includes slide count and the combined size of the Markdown and unique referenced media. Native file pickers use “Open File” and “Save File” titles to match Omarchy's floating-window rules.
+Finished videos hold their last frame using Qt 6.9's video output retention. Space restarts them from the beginning, while paused videos resume. Clear retained frames when changing media.
+
+The app interface follows the active desktop theme independently, watching its colors file and theme symlink for changes. Palette and font icons open the presentation pickers; the footer uses Omawrite's save/open icons. The title includes slide count and the combined size of the Markdown and unique referenced media. File pickers use the XDG desktop portal, as in Omacut, with “Open File” and “Save File” titles. Omarchy recognizes the portal's windows and opens them centered and floating.
 
 Snapshot the resolved palette into the deck's YAML front matter when choosing a theme. Keep its name as attribution and offer an explicit refresh from the installed theme. This makes colors portable and stable after desktop theme changes. Store font choices too; report substitution when a font is missing. Omarchy's palette does not prescribe a presentation font. Offer to copy a chosen theme wallpaper into `images/` as a background.
 
@@ -190,13 +194,19 @@ Keep the responsibilities small and separate:
 | ThemeCatalog | Installed palette discovery and portable snapshots |
 | Exporter | PDF/PPTX jobs, progress, cancellation and temporary output handling |
 
+Single-slide edits reparse only their own source range. Preserve the other slide boundaries even while a code fence is incomplete, including across undo, redo, theme changes, and reordering. Validate the complete Markdown before saving. Before replacing an existing presentation, atomically back up its previous bytes under `.hype-backups/`; retain 20 versions per filename and abort the save if backup creation fails.
+
 QML owns interaction and controls. C++ owns document operations and layout. Paint static slide content with QPainter through a QQuickPaintedItem, and use that same painter/layout for image and PDF output. Overlay a Qt Multimedia video surface in the resolved video rectangle during playback. A separate per-slide Markdown editor avoids coupling text input geometry to the fitted canvas.
 
 Prototype this rendering path before building the whole editor: it aims to keep text geometry consistent and preserve vector text in PDF. Qt supports painting in the Quick scene through [QQuickPaintedItem](https://doc.qt.io/qt-6/qquickpainteditem.html) and PDF output through [QPdfWriter](https://doc.qt.io/qt-6/qpdfwriter.html). Verify font embedding, glyph coverage, and scaling on real fixtures rather than assuming identical output.
 
 Virtualize the thumbnail list, cache by slide/source/theme revision, and regenerate only changed slides. Decode large images and generate video posters away from the UI thread. Validate responsiveness with a 150-slide deck and large media files.
 
+Keep sidebar loading separate from full-preview decoding. Retain two viewports of nearby thumbnails and preload the three slides on either side after navigation settles. Give current requests priority over prefetches, discard obsolete queued work, and serve cache hits without waiting for decodes. Share bounded image caches across workers, with separate thumbnail and full-preview budgets; publish generated video posters atomically.
+
 ## Export contract
+
+Run PDF and PowerPoint export in a separate Hype process using a snapshot of the current Markdown and palette. Keep the editor responsive, show rendering/conversion/packaging progress and cancellation in the footer, and publish the destination atomically only after success. Preserve existing files on failure or cancellation, terminate encoder children when cancelled, and remove temporary work.
 
 PDF: one page per slide at the deck aspect ratio, with painted text and images. Videos become their poster frames. Use the same layout as the editor and embed fonts where supported by their licensing and Qt. Verify Unicode including color emoji, code, transparency, image cropping, and HiDPI rendering.
 
@@ -214,7 +224,7 @@ Export jobs use a temporary destination, report progress, permit cancellation, a
 4. **Complete media, themes, and presenting.** Import/paste/drop, playback and posters, installed theme picker and saved palettes, code highlighting, fullscreen navigation. Move a deck folder and verify it still works.
 5. **Package and validate real usage.** Recreate representative slides from the 2024–2026 decks as private local fixtures. Test a 150-slide presentation, export cancellation/failure, PDFs at presentation and print scale, and self-contained PPTX playback on another machine. Provide the Omacut-style build/test/install scripts and Arch package.
 
-Version one is complete when a talk can be authored entirely in Markdown or through visual slide operations, reordered without source loss, presented with local images and videos, themed from installed Omarchy palettes, and exported as rendered PDF/PPTX files. Keep direct canvas text editing, crash recovery, automatic video transcoding, transitions, freeform object placement, collaboration, existing Keynote/PPTX import, and presenter view for later.
+Version one is complete when a talk can be authored entirely in Markdown or through visual slide operations, reordered without source loss, presented with local images and videos, themed from installed Omarchy palettes, and exported as rendered PDF/PPTX files. Keep direct canvas text editing, crash recovery, transitions, freeform object placement, collaboration, existing Keynote/PPTX import, and presenter view for later.
 
 
 ## More examples from the existing decks
