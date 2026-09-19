@@ -1364,6 +1364,11 @@ class HypeTests : public QObject {
         const double slideStep = list->property("slideStep").toDouble();
         auto a = list->mapToScene(QPointF(100, 50)).toPoint(),
              b = list->mapToScene(QPointF(100, 2 * slideStep + 90)).toPoint();
+        // Hovering a thumbnail names its slide.
+        QTest::mouseMove(window, b);
+        QTRY_COMPARE(list->property("hoveredSlide").toInt(), 2);
+        QTest::mouseMove(window, a);
+        QTRY_COMPARE(list->property("hoveredSlide").toInt(), 0);
         QTest::mousePress(window, Qt::LeftButton, Qt::NoModifier, a);
         for (int step = 1; step <= 20; ++step)
             QTest::mouseMove(window, a + (b - a) * step / 20, 10);

@@ -26,7 +26,7 @@ Use **Ctrl+Enter** or right-click a slide to add a slide after the selection. Dr
 
 Hype saves automatically after a one-second typing pause, or every five seconds while you keep typing. Use **Ctrl+S** to choose a file for a new presentation or save immediately. Hype remembers the last directory you opened or saved to.
 
-Every saved version stays in `.hype-backups/` beside your presentation. Hype also keeps local recovery snapshots, including unfinished Markdown and unnamed presentations, and restores your latest draft when you reopen after a crash. Click **History** in the bottom bar to restore an earlier snapshot; your current version remains available there too. Recovery snapshots contain Markdown and slide boundaries, not copies of images or videos. Unfinished code fences are backed up without replacing the last valid presentation file. Finish them before exporting; Hype checks that every slide will be preserved.
+Every saved version stays in `.hype-backups/` beside your presentation. Hype also keeps local recovery snapshots, including unfinished Markdown and unnamed presentations, and restores your latest draft when you reopen after a crash. Click the **History** clock in the top bar to restore an earlier snapshot; your current version remains available there too. Recovery snapshots contain Markdown and slide boundaries, not copies of images or videos. Unfinished code fences are backed up without replacing the last valid presentation file. Finish them before exporting; Hype checks that every slide will be preserved.
 
 Local recovery snapshots live in `~/.local/state/hype/recovery/` (under `$XDG_STATE_HOME` if set). You can also recover a `.hype-backups/` version manually: copy its `.bak` file to a new `.md` file and open it.
 
@@ -145,7 +145,7 @@ Finished videos hold their last frame. Press Space again to replay from the begi
 
 Choose **Export → PDF** or **PowerPoint** to share your presentation. Both exports are built into Hype. PowerPoint renders slides and converted animations at 4K (3840 × 2160). Slides preserve the rendered appearance rather than exposing editable text and shapes; the receiving computer does not need your fonts installed. Videos are embedded, and animated WebP/GIF images are converted to MP4 automatically without changing the original files. PDF captures still slides.
 
-Export runs in the background. The bottom bar shows progress through rendering, video conversion, and packaging, with a Cancel button. You can keep editing; the export uses the presentation as it was when you started. Failed or cancelled exports leave an existing file intact.
+Export runs in the background. The top bar shows progress through rendering, video conversion, and packaging under the presentation name, with a **Cancel export** button. You can keep editing; the export uses the presentation as it was when you started. Failed or cancelled exports leave an existing file intact.
 
 PDF keeps text as vectors and sizes embedded images for their visible area at 4K, omitting unused pixels outside spanning crops. Images use lossless compression to preserve fine detail. Photo-heavy PDFs can be larger than JPEG-compressed exports because they avoid additional compression artifacts.
 

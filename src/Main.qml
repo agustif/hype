@@ -13,13 +13,32 @@ ApplicationWindow {
     title: deck.title + (deck.dirty ? " •" : "") + " — Hype"
     AppTheme { id: appTheme }
     readonly property var ui: appTheme.colors
-    color: ui.background
+    color: presenting ? ui.background : ui.panel
     palette.window: win.ui.panel; palette.base: win.ui.background; palette.text: win.ui.foreground
     palette.placeholderText: win.ui.muted
     palette.windowText: win.ui.foreground; palette.button: win.ui.button; palette.buttonText: win.ui.foreground
     palette.highlight: win.ui.selection; palette.highlightedText: win.ui.selectionText
     palette.mid: win.ui.hover; palette.light: win.ui.border; palette.dark: win.ui.button
     property bool markdown: false
+    readonly property int inset: 20
+    property string flash: ""
+    property bool flashFailed: false
+    property string seenExportStatus: ""
+    function flashStatus(text, failed) {
+        flash = text; flashFailed = failed
+        flashTimer.interval = failed ? 10000 : 4000
+        if (text) flashTimer.restart()
+    }
+    Timer { id: flashTimer; onTriggered: win.flash = "" }
+    Connections {
+        target: deck
+        function onStatusChanged() { if (!deck.exporting) win.flashStatus(deck.status, false) }
+        function onExportChanged() {
+            if (deck.exporting || deck.exportStatus === win.seenExportStatus) return
+            win.seenExportStatus = deck.exportStatus
+            win.flashStatus(deck.exportStatus, deck.exportFailed)
+        }
+    }
     property bool syncingEditor: false
     property bool editingSlide: false
     property bool presenting: false
@@ -129,7 +148,7 @@ ApplicationWindow {
         if (focus) sourceEditor.forceActiveFocus()
         Qt.callLater(function() {
             let rect = sourceEditor.positionToRectangle(deck.sourcePosition())
-            let viewportHeight = win.contentItem.height
+            let viewportHeight = win.contentItem.height - 2 * win.inset
             let nextY = previousY
             if (atTop || rect.y < previousY + sourceEditor.topPadding)
                 nextY = rect.y - sourceEditor.topPadding
@@ -358,50 +377,105 @@ ApplicationWindow {
     Shortcut { sequence: "Space"; enabled: !win.popupOpen && !deck.compressingImage && win.presenting && (deck.media.video || animation.active); autoRepeat: false; onActivated: { if (animation.item) animation.item.paused = !animation.item.paused; else win.toggleVideo() } }
     Shortcut { sequence: "Ctrl+V"; enabled: !win.popupOpen && !deck.compressingImage && (!slideEditor.activeFocus && !sourceEditor.activeFocus); onActivated: deck.pasteMedia() }
     component ToolbarIconButton: ToolButton {
+        id: toolbarButton
         required property string iconName
         required property string description
-        Layout.preferredWidth: 40; Layout.preferredHeight: 40
+        property bool primary: false
+        property color ink: win.ui.muted
+        readonly property bool lit: hovered || down
+        Layout.preferredWidth: primary ? 40 : 36; Layout.preferredHeight: 36
+        Layout.leftMargin: primary ? 9 : 0
         padding: 0
         Accessible.name: description
         ToolTip.visible: hovered; ToolTip.text: description
         contentItem: Item {
-            AppIcon { anchors.centerIn: parent; width: 22; height: 22; name: iconName; color: win.ui.foreground; opacity: enabled ? 1 : 0.4 }
+            AppIcon {
+                anchors.centerIn: parent; width: 18; height: 18; name: toolbarButton.iconName; opacity: toolbarButton.enabled ? 1 : 0.4
+                color: toolbarButton.primary ? win.ui.accentText : toolbarButton.lit ? win.ui.foreground : toolbarButton.ink
+            }
         }
-        background: Rectangle { color: parent.hovered || parent.down ? win.ui.hover : win.ui.button; radius: 3 }
+        background: Rectangle {
+            radius: 3
+            color: toolbarButton.primary ? (toolbarButton.lit ? win.ui.accentHover : win.ui.accent) : toolbarButton.lit ? win.ui.hover : "transparent"
+        }
     }
-    component EditorIconButton: ToolbarIconButton {
-        Layout.preferredWidth: 32; Layout.preferredHeight: 32
+    component EditorButton: ToolButton {
+        id: editorButton
+        required property string iconName
+        required property string label
+        required property string description
+        property bool menu: false
+        readonly property color ink: hovered || down ? win.ui.foreground : win.ui.muted
+        Layout.preferredHeight: 32
+        leftPadding: 10; rightPadding: 10; topPadding: 0; bottomPadding: 0
         focusPolicy: Qt.NoFocus
-        background: Rectangle { color: parent.hovered || parent.down ? win.ui.hover : "transparent"; radius: 3 }
+        Accessible.name: description
+        ToolTip.visible: hovered; ToolTip.text: description
+        contentItem: Row {
+            spacing: 7; opacity: editorButton.enabled ? 1 : 0.4
+            AppIcon { visible: !editorButton.menu || editorBar.compact; anchors.verticalCenter: parent.verticalCenter; width: 16; height: 16; name: editorButton.iconName; color: editorButton.ink }
+            Label { visible: !editorBar.compact; anchors.verticalCenter: parent.verticalCenter; text: editorButton.label; font.pixelSize: 13; color: editorButton.ink }
+            AppIcon { visible: editorButton.menu; anchors.verticalCenter: parent.verticalCenter; width: 11; height: 11; name: "chevron-down"; color: editorButton.ink }
+        }
+        background: Rectangle { color: editorButton.hovered || editorButton.down ? win.ui.hover : "transparent"; radius: 3 }
     }
     header: ToolBar {
         id: topBar
         visible: !win.presenting; height: visible ? 60 : 0
-        background: Rectangle { color: win.ui.panel; border.color: win.ui.border }
-        Label {
-            id: logo; objectName: "hypeLogo"
-            anchors.left: parent.left; anchors.leftMargin: 20; anchors.verticalCenter: parent.verticalCenter
-            text: "Hype"; font.pixelSize: 22; font.bold: true; color: win.ui.accent
+        background: Rectangle {
+            color: win.ui.panel
+            Rectangle { x: win.inset; width: parent.width - 2 * win.inset; height: 1; anchors.bottom: parent.bottom; color: win.ui.border }
         }
         Label {
-            objectName: "deckSummary"
-            anchors.centerIn: parent
-            width: Math.max(0, topBar.width - 2 * (Math.max(toolbarActions.width + 18, logo.width + 20) + 20))
-            text: deck.title + "  ·  " + deck.count + (deck.count === 1 ? " slide" : " slides") + "  ·  " + deck.sizeLabel
-            elide: Text.ElideMiddle; horizontalAlignment: Text.AlignHCenter; color: win.ui.foreground
-            ToolTip.visible: summaryHover.hovered && truncated; ToolTip.text: text
-            HoverHandler { id: summaryHover }
+            id: logo; objectName: "hypeLogo"
+            anchors.left: parent.left; anchors.leftMargin: win.inset; anchors.verticalCenter: parent.verticalCenter
+            text: "Hype"; font.pixelSize: 22; font.bold: true; color: win.ui.accent
+        }
+        Column {
+            id: summary; objectName: "deckSummary"
+            readonly property real room: Math.max(0, topBar.width - 2 * (Math.max(toolbarActions.width, logo.width) + win.inset + 20))
+            anchors.centerIn: parent; spacing: 2
+            Label {
+                anchors.horizontalCenter: parent.horizontalCenter
+                text: deck.title; color: win.ui.foreground
+                width: Math.min(implicitWidth, summary.room); elide: Text.ElideRight
+                ToolTip.visible: summaryHover.hovered && truncated; ToolTip.text: text
+                HoverHandler { id: summaryHover }
+            }
+            Label {
+                anchors.horizontalCenter: parent.horizontalCenter
+                objectName: "deckStatus"
+                width: Math.min(implicitWidth, summary.room); elide: Text.ElideRight
+                text: deck.exporting ? deck.exportStatus + "  ·  " + Math.floor(deck.exportProgress * 100) + "%"
+                    : win.flash ? win.flash
+                    : deck.selectionCount > 1 ? deck.selectionCount + " slides selected" : "Slide " + (deck.selected+1) + " of " + deck.count
+                font.pixelSize: 12; color: win.flash && win.flashFailed && !deck.exporting ? win.ui.error : win.ui.muted
+                ToolTip.visible: statusHover.hovered && truncated; ToolTip.text: text
+                HoverHandler { id: statusHover }
+            }
+        }
+        Rectangle {
+            visible: deck.exporting; Accessible.name: "Export progress"
+            x: win.inset; anchors.bottom: parent.bottom
+            width: (parent.width - 2 * win.inset) * deck.exportProgress; height: 2; color: win.ui.accent
         }
         RowLayout {
             id: toolbarActions; objectName: "toolbarActions"
-            anchors.right: parent.right; anchors.rightMargin: 18; anchors.verticalCenter: parent.verticalCenter
-            spacing: 8
+            anchors.right: parent.right; anchors.rightMargin: win.inset; anchors.verticalCenter: parent.verticalCenter
+            spacing: 6
+            ToolButton {
+                id: cancelExport
+                visible: deck.exporting; Layout.preferredHeight: 36; leftPadding: 10; rightPadding: 10
+                contentItem: Label { text: "Cancel export"; font.pixelSize: 12; color: cancelExport.hovered ? win.ui.foreground : win.ui.muted; verticalAlignment: Text.AlignVCenter }
+                background: Rectangle { color: cancelExport.hovered || cancelExport.down ? win.ui.hover : "transparent"; radius: 3 }
+                onClicked: deck.cancelExport()
+            }
             ComboBox {
                 id: themes; objectName: "themePicker"
-                Layout.preferredWidth: 40; Layout.preferredHeight: 40
+                Layout.preferredWidth: 36; Layout.preferredHeight: 36
                 padding: 0; indicator: null
                 contentItem: Item {
-                    AppIcon { anchors.centerIn: parent; width: 22; height: 22; name: "theme"; color: win.ui.foreground }
+                    AppIcon { anchors.centerIn: parent; width: 18; height: 18; name: "theme"; color: themes.hovered || themes.popup.visible ? win.ui.foreground : win.ui.muted }
                 }
                 Accessible.name: "Theme: " + currentText
                 ToolTip.visible: hovered; ToolTip.text: "Theme: " + currentText
@@ -414,7 +488,7 @@ ApplicationWindow {
                     contentItem: Text { text: modelData; color: win.ui.foreground; font: themes.font; verticalAlignment: Text.AlignVCenter }
                     background: Rectangle { color: parent.highlighted ? win.ui.hover : win.ui.panel }
                 }
-                background: Rectangle { color: themes.hovered ? win.ui.hover : win.ui.button; radius: 3 }
+                background: Rectangle { color: themes.hovered || themes.popup.visible ? win.ui.hover : "transparent"; radius: 3 }
                 model: deck.themeNames
                 currentIndex: Math.max(0, deck.themeNames.indexOf(deck.themeName))
                 onActivated: deck.chooseTheme(currentText)
@@ -448,10 +522,10 @@ ApplicationWindow {
                         Qt.callLater(function() { fonts.popup.open() })
                     } else deck.chooseFont(visibleFonts[index])
                 }
-                Layout.preferredWidth: 40; Layout.preferredHeight: 40
+                Layout.preferredWidth: 36; Layout.preferredHeight: 36
                 padding: 0; indicator: null
                 contentItem: Item {
-                    AppIcon { anchors.centerIn: parent; width: 22; height: 22; name: "font"; color: win.ui.foreground }
+                    AppIcon { anchors.centerIn: parent; width: 18; height: 18; name: "font"; color: fonts.hovered || fonts.popup.visible ? win.ui.foreground : win.ui.muted }
                 }
                 Accessible.name: "Font: " + deck.fontName
                 delegate: ItemDelegate {
@@ -462,7 +536,7 @@ ApplicationWindow {
                     contentItem: Text { text: modelData; color: win.ui.foreground; font: fonts.font; elide: Text.ElideRight; verticalAlignment: Text.AlignVCenter }
                     background: Rectangle { color: parent.highlighted ? win.ui.hover : win.ui.panel }
                 }
-                background: Rectangle { color: fonts.hovered ? win.ui.hover : win.ui.button; radius: 3 }
+                background: Rectangle { color: fonts.hovered || fonts.popup.visible ? win.ui.hover : "transparent"; radius: 3 }
                 popup: Popup {
                     y: fonts.height + 4; width: 320; padding: 6
                     height: Math.min(contentItem.implicitHeight + 12, 420, win.height - 100)
@@ -484,8 +558,17 @@ ApplicationWindow {
                 onClicked: win.setMarkdownMode(!win.markdown)
             }
             ToolbarIconButton {
-                objectName: "presentButton"; iconName: "present"; description: "Present (Ctrl+Space)"
-                onClicked: win.togglePresent()
+                objectName: "historyButton"; iconName: "history"; description: "History · Restore an earlier version"
+                onClicked: historyDialog.open()
+            }
+            ToolbarIconButton {
+                objectName: "openButton"; iconName: "open"; description: "Open (Ctrl+O)"
+                onClicked: deck.openDialog()
+            }
+            ToolbarIconButton {
+                objectName: "saveButton"; iconName: "save"; ink: deck.dirty ? win.ui.accent : win.ui.muted
+                description: (deck.dirty ? "Save changes" : "Saved") + " (Ctrl+S)"
+                onClicked: deck.save()
             }
             ToolbarIconButton {
                 objectName: "exportButton"; iconName: "export"; description: "Export"
@@ -498,58 +581,25 @@ ApplicationWindow {
                     MenuItem { text: "PowerPoint"; onTriggered: deck.exportDialog("pptx") }
                 }
             }
-        }
-    }
-    footer: ToolBar {
-        visible: !win.presenting; height: visible ? 34 : 0
-        background: Rectangle { color: win.ui.panel }
-        RowLayout { anchors.fill: parent; anchors.leftMargin: 20; anchors.rightMargin: 20
-            Label { text: deck.selectionCount > 1 ? deck.selectionCount + " slides selected" : "Slide " + (deck.selected+1) + " of " + deck.count; font.pixelSize: 12 }
-            Label {
-                text: deck.exportStatus || deck.status
-                elide: Text.ElideRight; Layout.fillWidth: true; horizontalAlignment: Text.AlignHCenter
-                font.pixelSize: 12; color: deck.exportFailed ? win.ui.error : win.ui.muted
-                ToolTip.visible: statusHover.hovered; ToolTip.text: text
-                HoverHandler { id: statusHover }
-            }
-            ProgressBar {
-                visible: deck.exporting; Layout.preferredWidth: 140
-                value: deck.exportProgress; palette.highlight: win.ui.accent
-                Accessible.name: "Export progress"
-            }
-            Label { visible: deck.exporting; text: Math.floor(deck.exportProgress * 100) + "%"; font.pixelSize: 12; color: win.ui.muted }
-            ToolButton { visible: deck.exporting; text: "Cancel"; onClicked: deck.cancelExport() }
-            ToolButton { text: "History"; onClicked: historyDialog.open(); ToolTip.visible: hovered; ToolTip.text: "Restore an earlier version" }
-            ToolButton {
-                objectName: "saveButton"; Layout.preferredWidth: 28; Layout.preferredHeight: 28
-                Accessible.name: deck.dirty ? "Save unsaved changes" : "Save presentation"
-                contentItem: Item { AppIcon { anchors.centerIn: parent; width: 16; height: 16; name: "save"; color: deck.dirty ? win.ui.accent : win.ui.muted } }
-                background: Rectangle { color: parent.hovered ? win.ui.hover : "transparent"; radius: 3 }
-                ToolTip.visible: hovered; ToolTip.text: (deck.dirty ? "Save changes" : "Saved") + " (Ctrl+S)"
-                onClicked: deck.save()
-            }
-            ToolButton {
-                objectName: "openButton"; Layout.preferredWidth: 28; Layout.preferredHeight: 28
-                Accessible.name: "Open presentation"
-                contentItem: Item { AppIcon { anchors.centerIn: parent; width: 16; height: 16; name: "open"; color: win.ui.muted } }
-                background: Rectangle { color: parent.hovered ? win.ui.hover : "transparent"; radius: 3 }
-                ToolTip.visible: hovered; ToolTip.text: "Open (Ctrl+O)"
-                onClicked: deck.openDialog()
+            ToolbarIconButton {
+                objectName: "presentButton"; iconName: "present"; description: "Present (Ctrl+Space)"; primary: true
+                onClicked: win.togglePresent()
             }
         }
     }
     RowLayout {
         anchors.fill: parent; spacing: 0
         Rectangle {
-            visible: !win.presenting; Layout.preferredWidth: 235; Layout.fillHeight: true; color: win.ui.panel
+            visible: !win.presenting; Layout.preferredWidth: 227; Layout.fillHeight: true; color: win.ui.panel
             ColumnLayout {
-                anchors.fill: parent; anchors.margins: 12; spacing: 10
+                anchors.fill: parent; anchors.margins: win.inset; spacing: 10
                 ListView {
                     id: thumbnails; objectName: "thumbnails"; Layout.fillWidth: true; Layout.fillHeight: true; clip: true
                     model: deck; spacing: 10; currentIndex: deck.selected
                     cacheBuffer: height * 2
                     highlightFollowsCurrentItem: false
                     ScrollBar.vertical: ScrollBar { policy: ScrollBar.AlwaysOff }
+                    property int hoveredSlide: -1
                     property int wheelDirection: 0
                     property real wheelRemainder: 0
                     readonly property real thumbnailHeight: 108
@@ -613,22 +663,24 @@ ApplicationWindow {
                     }
                     onMovementStarted: stopWheel()
                     delegate: Item {
-                        id: thumbnail; required property int index; required property int number
+                        id: thumbnail; required property int index
+                        HoverHandler { id: thumbnailHover; onHoveredChanged: thumbnails.hoveredSlide = hovered ? thumbnail.index : thumbnails.hoveredSlide === thumbnail.index ? -1 : thumbnails.hoveredSlide }
+                        ToolTip.visible: thumbnailHover.hovered && win.dragIndex < 0; ToolTip.delay: 400
+                        ToolTip.text: "Slide " + (index + 1)
                         width: thumbnails.width; height: thumbnails.thumbnailHeight
                         property bool selected: index >= deck.selectionFirst && index <= deck.selectionLast
                         opacity: win.dragIndex >= 0 && selected ? 0.4 : 1
                         Rectangle {
-                            x: 22; width: parent.width - 24; height: parent.height; color: deck.background
+                            width: parent.width; height: parent.height; color: deck.background
                             border.width: deck.selected === thumbnail.index ? 3 : thumbnail.selected ? 2 : 1
                             border.color: thumbnail.selected ? win.ui.accent : win.ui.border; radius: 3
-                            Image { anchors.fill: parent; anchors.margins: 3; source: "image://slides/" + (deck.revision, deck.renderId(thumbnail.index)); asynchronous: true; retainWhileLoading: true; cache: true; sourceSize.width: 340; sourceSize.height: 192; fillMode: Image.PreserveAspectFit }
+                            Image { anchors.fill: parent; anchors.margins: 3; source: "image://slides/" + (deck.revision, deck.renderId(thumbnail.index)); asynchronous: true; retainWhileLoading: true; cache: true; sourceSize.width: 340; sourceSize.height: 192; fillMode: Image.PreserveAspectCrop; clip: true }
                         }
-                        Label { text: thumbnail.number; width: 18; y: 4; color: thumbnail.selected ? win.ui.accent : win.ui.muted; font.pixelSize: 11 }
                     }
                     Rectangle {
                         parent: thumbnails; z: 2
                         visible: win.dragIndex >= 0 && win.dropIndex >= 0
-                        x: 22; width: thumbnails.width - 24; height: 3
+                        width: thumbnails.width; height: 3
                         y: Math.max(0, Math.min(thumbnails.height - height,
                             thumbnails.originY + win.dropIndex * thumbnails.slideStep - thumbnails.contentY - thumbnails.spacing / 2))
                         color: win.ui.accent
@@ -699,6 +751,8 @@ ApplicationWindow {
             id: workspace; orientation: Qt.Vertical
             visible: !win.markdown || win.presenting
             Layout.fillWidth: true; Layout.fillHeight: true
+            Layout.margins: win.presenting ? 0 : win.inset; Layout.leftMargin: 0
+            background: Rectangle { color: win.ui.background }
             handle: Rectangle {
                 implicitHeight: win.presenting ? 0 : 6
                 color: SplitHandle.hovered || SplitHandle.pressed ? win.ui.accent : win.ui.border
@@ -760,26 +814,25 @@ ApplicationWindow {
                 SplitView.preferredHeight: 250; SplitView.minimumHeight: 140
                 SplitView.maximumHeight: workspace.height * 0.65
             ToolBar {
-                Layout.fillWidth: true; Layout.preferredHeight: 42
-                background: Rectangle { color: win.ui.panel }
+                id: editorBar
+                readonly property bool compact: width < 600
+                Layout.fillWidth: true; Layout.preferredHeight: 48
+                background: Rectangle {
+                    color: win.ui.background
+                    Rectangle { anchors.bottom: parent.bottom; width: parent.width; height: 1; color: win.ui.border; opacity: 0.55 }
+                }
                 RowLayout {
-                    anchors.fill: parent; anchors.leftMargin: 16; anchors.rightMargin: 16; spacing: 4
-                    EditorIconButton { objectName: "boldButton"; iconName: "bold"; description: "Bold"; onClicked: win.formatSlide("bold") }
-                    EditorIconButton { objectName: "italicButton"; iconName: "italic"; description: "Italic"; onClicked: win.formatSlide("italic") }
-                    EditorIconButton { objectName: "headlineButton"; iconName: "headline"; description: "Headline"; onClicked: win.formatSlide("headline") }
-                    EditorIconButton { objectName: "codeButton"; iconName: "markdown"; description: "Code block"; onClicked: win.formatSlide("code") }
-                    EditorIconButton { objectName: "commentButton"; iconName: "comment"; description: "Comment (hidden on slide)"; onClicked: win.formatSlide("comment") }
-                    Rectangle { Layout.preferredWidth: 1; Layout.preferredHeight: 20; Layout.leftMargin: 8; Layout.rightMargin: 8; color: win.ui.border }
-                    EditorIconButton { iconName: "media-add"; description: "Add image / video"; onClicked: deck.importDialog() }
-                    EditorIconButton {
-                        objectName: "mediaOptionsButton"; iconName: "adjust"; description: "Image / video options"
-                        Layout.preferredWidth: 44
+                    anchors.fill: parent; anchors.leftMargin: 14; anchors.rightMargin: 14; spacing: 2
+                    EditorButton { objectName: "boldButton"; iconName: "bold"; label: "Bold"; description: "Bold"; onClicked: win.formatSlide("bold") }
+                    EditorButton { objectName: "italicButton"; iconName: "italic"; label: "Italic"; description: "Italic"; onClicked: win.formatSlide("italic") }
+                    EditorButton { objectName: "headlineButton"; iconName: "headline"; label: "Headline"; description: "Headline"; onClicked: win.formatSlide("headline") }
+                    EditorButton { objectName: "codeButton"; iconName: "code"; label: "Code"; description: "Code block"; onClicked: win.formatSlide("code") }
+                    EditorButton { objectName: "commentButton"; iconName: "comment"; label: "Note"; description: "Comment (hidden on slide)"; onClicked: win.formatSlide("comment") }
+                    Item { Layout.fillWidth: true }
+                    EditorButton { iconName: "media-add"; label: "Media"; description: "Add image / video"; onClicked: deck.importDialog() }
+                    EditorButton {
+                        objectName: "mediaOptionsButton"; iconName: "adjust"; label: "Layout"; description: "Image / video options"; menu: true
                         enabled: !!deck.media.url.toString()
-                        contentItem: Item {
-                            opacity: enabled ? 1 : 0.4
-                            AppIcon { anchors.left: parent.left; anchors.leftMargin: 5; anchors.verticalCenter: parent.verticalCenter; width: 22; height: 22; name: "adjust"; color: win.ui.foreground }
-                            AppIcon { anchors.right: parent.right; anchors.rightMargin: 2; anchors.verticalCenter: parent.verticalCenter; width: 12; height: 12; name: "chevron-down"; color: win.ui.foreground }
-                        }
                         onClicked: mediaMenu.open()
                         Menu {
                             id: mediaMenu; objectName: "mediaMenu"; y: parent.height + 4
@@ -793,7 +846,6 @@ ApplicationWindow {
                             MenuItem { text: "Use theme color"; checkable: true; checked: deck.media.background === "theme"; onTriggered: deck.matchImageBackground(false) }
                         }
                     }
-                    Item { Layout.fillWidth: true }
                 }
             }
             ScrollView {
@@ -825,6 +877,8 @@ ApplicationWindow {
             id: sourceScroll; objectName: "sourceScroll"
             visible: win.markdown && !win.presenting
             Layout.fillWidth: true; Layout.fillHeight: true; clip: true
+            Layout.margins: win.inset; Layout.leftMargin: 0
+            background: Rectangle { color: win.ui.background }
             Flickable {
                 id: sourceFlick; objectName: "sourceFlick"
                 clip: true; boundsBehavior: Flickable.StopAtBounds
