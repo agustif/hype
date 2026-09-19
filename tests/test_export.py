@@ -212,15 +212,15 @@ class ExportTests(unittest.TestCase):
         self.assertEqual(list((self.root / 'videos').iterdir()), [])
         self.assertEqual(set((self.root / 'images').iterdir()), {self.root / 'images/photo.png', source})
 
-    def test_gif_conversion_preserves_side_layout_finite_loop_and_manual_playback(self):
+    def test_gif_conversion_preserves_fit_layout_finite_loop_and_manual_playback(self):
         self.animation('gif')
-        self.export('![left background=#123456 autoplay=false](demo.gif)\n\n# Caption\n')
+        self.export('![fit background=#123456 autoplay=false](demo.gif)\n\n# Caption\n')
         movie, xml, info = self.extracted_movie()
         self.assertAlmostEqual(float(info['format']['duration']), 0.68, delta=0.04)
         self.assert_color(self.movie_pixel(movie, 0.05, 50, 54), (191, 0, 0))
         self.assert_color(self.movie_pixel(movie, 0.25, 50, 54), (0, 0, 191))
         self.assert_color(self.movie_pixel(movie, 0.55, 50, 54), (0, 96, 0))
-        self.assert_color(self.movie_pixel(movie, 0.25, 180, 10), (13, 39, 64))
+        self.assert_color(self.movie_pixel(movie, 0.25, 180, 2), (13, 39, 64))
         timing = xml.find('.//p:video/p:cMediaNode/p:cTn', NS)
         self.assertEqual(timing.get('repeatCount'), '3000')
         self.assertEqual(timing.find('p:stCondLst/p:cond', NS).get('delay'), 'indefinite')
