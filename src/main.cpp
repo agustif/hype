@@ -14,9 +14,11 @@
 int main(int argc, char **argv) {
     QApplication app(argc, argv);
     app.setApplicationName("hype");
+    app.setApplicationVersion("0.2.0");
     app.setDesktopFileName(qEnvironmentVariable("HYPE_DESKTOP_FILE", "hype"));
     QCommandLineParser args;
     args.addHelpOption();
+    args.addVersionOption();
     args.addPositionalArgument("presentation", "Markdown presentation");
     args.addOption({"pdf", "Export PDF and exit", "file"});
     args.addOption({"pptx", "Export rendered PowerPoint and exit", "file"});
