@@ -4,6 +4,7 @@ import QtQuick.Controls
 import QtQuick.Layouts
 import QtMultimedia
 import Hype 1.0
+import "Markdown.js" as Markdown
 
 ApplicationWindow {
     id: win
@@ -24,7 +25,7 @@ ApplicationWindow {
     property bool presenting: false
     readonly property bool popupOpen: pasteDialog.visible || compressionDialog.visible ||
         historyDialog.visible || closeDialog.visible || themes.popup.visible || fonts.popup.visible ||
-        slideMenu.visible || backgroundMenu.visible || exportMenu.visible
+        slideMenu.visible || mediaMenu.visible || exportMenu.visible
     property var compressionReturnFocus: null
     property bool allowClose: false
     property int lastSelected: -1
@@ -97,6 +98,12 @@ ApplicationWindow {
         if (event.modifiers & Qt.ShiftModifier) editor.moveCursorSelection(position, TextEdit.SelectCharacters)
         else editor.cursorPosition = position
         if (page) flick.contentY = Math.max(0, Math.min(Math.max(0, flick.contentHeight - flick.height + flick.bottomMargin), scroll))
+    }
+    function formatSlide(kind) {
+        const edit = Markdown.format(slideEditor.text, slideEditor.selectionStart, slideEditor.selectionEnd, kind)
+        slideEditor.forceActiveFocus()
+        deck.editSlide(edit.text)
+        slideEditor.select(edit.start, edit.end)
     }
     function focusMarkdown() {
         if (markdown) revealSource(false, sourceFlick.contentY)
@@ -350,17 +357,45 @@ ApplicationWindow {
     Shortcut { sequence: "End"; enabled: !win.popupOpen && !deck.compressingImage && (win.presenting || (!win.markdown && !slideEditor.activeFocus)); onActivated: deck.select(deck.count - 1) }
     Shortcut { sequence: "Space"; enabled: !win.popupOpen && !deck.compressingImage && win.presenting && (deck.media.video || animation.active); autoRepeat: false; onActivated: { if (animation.item) animation.item.paused = !animation.item.paused; else win.toggleVideo() } }
     Shortcut { sequence: "Ctrl+V"; enabled: !win.popupOpen && !deck.compressingImage && (!slideEditor.activeFocus && !sourceEditor.activeFocus); onActivated: deck.pasteMedia() }
+    component ToolbarIconButton: ToolButton {
+        required property string iconName
+        required property string description
+        Layout.preferredWidth: 40; Layout.preferredHeight: 40
+        padding: 0
+        Accessible.name: description
+        ToolTip.visible: hovered; ToolTip.text: description
+        contentItem: Item {
+            AppIcon { anchors.centerIn: parent; width: 22; height: 22; name: iconName; color: win.ui.foreground; opacity: enabled ? 1 : 0.4 }
+        }
+        background: Rectangle { color: parent.hovered || parent.down ? win.ui.hover : win.ui.button; radius: 3 }
+    }
+    component EditorIconButton: ToolbarIconButton {
+        Layout.preferredWidth: 32; Layout.preferredHeight: 32
+        focusPolicy: Qt.NoFocus
+        background: Rectangle { color: parent.hovered || parent.down ? win.ui.hover : "transparent"; radius: 3 }
+    }
     header: ToolBar {
+        id: topBar
         visible: !win.presenting; height: visible ? 60 : 0
         background: Rectangle { color: win.ui.panel; border.color: win.ui.border }
+        Label {
+            id: logo; objectName: "hypeLogo"
+            anchors.left: parent.left; anchors.leftMargin: 20; anchors.verticalCenter: parent.verticalCenter
+            text: "Hype"; font.pixelSize: 22; font.bold: true; color: win.ui.accent
+        }
+        Label {
+            objectName: "deckSummary"
+            anchors.centerIn: parent
+            width: Math.max(0, topBar.width - 2 * (Math.max(toolbarActions.width + 18, logo.width + 20) + 20))
+            text: deck.title + "  ·  " + deck.count + (deck.count === 1 ? " slide" : " slides") + "  ·  " + deck.sizeLabel
+            elide: Text.ElideMiddle; horizontalAlignment: Text.AlignHCenter; color: win.ui.foreground
+            ToolTip.visible: summaryHover.hovered && truncated; ToolTip.text: text
+            HoverHandler { id: summaryHover }
+        }
         RowLayout {
-            anchors.fill: parent; anchors.leftMargin: 20; anchors.rightMargin: 18; spacing: 12
-            Label { text: "Hype"; font.pixelSize: 22; font.bold: true; color: win.ui.accent }
-            Label {
-                objectName: "deckSummary"
-                text: "·  " + deck.title + "  ·  " + deck.count + (deck.count === 1 ? " slide" : " slides") + "  ·  " + deck.sizeLabel
-                elide: Text.ElideRight; Layout.fillWidth: true; Layout.minimumWidth: 0; color: win.ui.foreground
-            }
+            id: toolbarActions; objectName: "toolbarActions"
+            anchors.right: parent.right; anchors.rightMargin: 18; anchors.verticalCenter: parent.verticalCenter
+            spacing: 8
             ComboBox {
                 id: themes; objectName: "themePicker"
                 Layout.preferredWidth: 40; Layout.preferredHeight: 40
@@ -442,14 +477,27 @@ ApplicationWindow {
                 }
                 ToolTip.visible: hovered; ToolTip.text: "Font: " + deck.fontName
             }
-            Button {
-                text: win.markdown ? "Markdown" : "Visual"
+            ToolbarIconButton {
+                objectName: "modeButton"
+                iconName: win.markdown ? "markdown" : "visual"
+                description: (win.markdown ? "Markdown mode · Switch to Visual" : "Visual mode · Switch to Markdown") + " (Ctrl+E)"
                 onClicked: win.setMarkdownMode(!win.markdown)
-                ToolTip.visible: hovered
-                ToolTip.text: (win.markdown ? "Switch to Visual" : "Switch to Markdown") + " (Ctrl+E)"
             }
-            Button { text: "▶ Present"; onClicked: win.togglePresent() }
-            Button { text: "Export"; enabled: !deck.exporting; onClicked: exportMenu.open(); Menu { id: exportMenu; MenuItem { text: "PDF"; onTriggered: deck.exportDialog("pdf") } MenuItem { text: "PowerPoint"; onTriggered: deck.exportDialog("pptx") } } }
+            ToolbarIconButton {
+                objectName: "presentButton"; iconName: "present"; description: "Present (Ctrl+Space)"
+                onClicked: win.togglePresent()
+            }
+            ToolbarIconButton {
+                objectName: "exportButton"; iconName: "export"; description: "Export"
+                enabled: !deck.exporting
+                onClicked: exportMenu.open()
+                Menu {
+                    id: exportMenu
+                    y: parent.height + 4
+                    MenuItem { text: "PDF"; onTriggered: deck.exportDialog("pdf") }
+                    MenuItem { text: "PowerPoint"; onTriggered: deck.exportDialog("pptx") }
+                }
+            }
         }
     }
     footer: ToolBar {
@@ -712,16 +760,39 @@ ApplicationWindow {
                 SplitView.preferredHeight: 250; SplitView.minimumHeight: 140
                 SplitView.maximumHeight: workspace.height * 0.65
             ToolBar {
-                Layout.fillWidth: true
+                Layout.fillWidth: true; Layout.preferredHeight: 42
                 background: Rectangle { color: win.ui.panel }
-                RowLayout { anchors.fill: parent; anchors.leftMargin: 20; spacing: 12
-                    Label { text: "Markdown"; color: win.ui.muted; font.pixelSize: 12 }
-                    Button { text: "+ Image / video"; onClicked: deck.importDialog() }
-                    Button { text: "Fit"; onClicked: deck.setMediaMode("fit") }
-                    Button { text: "Span"; onClicked: deck.setMediaMode("span") }
-                    Button { text: "Left"; enabled: !deck.media.video; onClicked: deck.setMediaMode("left") }
-                    Button { text: "Right"; enabled: !deck.media.video; onClicked: deck.setMediaMode("right") }
-                    Button { text: "Background"; onClicked: backgroundMenu.open(); Menu { id: backgroundMenu; MenuItem { text: "Match image edges"; onTriggered: deck.matchImageBackground(true) } MenuItem { text: deck.media.video ? "Blurred first frame" : "Blurred image"; onTriggered: deck.setMediaBackground("blur") } MenuItem { text: "Use theme color"; onTriggered: deck.matchImageBackground(false) } } }
+                RowLayout {
+                    anchors.fill: parent; anchors.leftMargin: 16; anchors.rightMargin: 16; spacing: 4
+                    EditorIconButton { objectName: "boldButton"; iconName: "bold"; description: "Bold"; onClicked: win.formatSlide("bold") }
+                    EditorIconButton { objectName: "italicButton"; iconName: "italic"; description: "Italic"; onClicked: win.formatSlide("italic") }
+                    EditorIconButton { objectName: "headlineButton"; iconName: "headline"; description: "Headline"; onClicked: win.formatSlide("headline") }
+                    EditorIconButton { objectName: "codeButton"; iconName: "markdown"; description: "Code block"; onClicked: win.formatSlide("code") }
+                    EditorIconButton { objectName: "commentButton"; iconName: "comment"; description: "Comment (hidden on slide)"; onClicked: win.formatSlide("comment") }
+                    Rectangle { Layout.preferredWidth: 1; Layout.preferredHeight: 20; Layout.leftMargin: 8; Layout.rightMargin: 8; color: win.ui.border }
+                    EditorIconButton { iconName: "media-add"; description: "Add image / video"; onClicked: deck.importDialog() }
+                    EditorIconButton {
+                        objectName: "mediaOptionsButton"; iconName: "adjust"; description: "Image / video options"
+                        Layout.preferredWidth: 44
+                        enabled: !!deck.media.url.toString()
+                        contentItem: Item {
+                            opacity: enabled ? 1 : 0.4
+                            AppIcon { anchors.left: parent.left; anchors.leftMargin: 5; anchors.verticalCenter: parent.verticalCenter; width: 22; height: 22; name: "adjust"; color: win.ui.foreground }
+                            AppIcon { anchors.right: parent.right; anchors.rightMargin: 2; anchors.verticalCenter: parent.verticalCenter; width: 12; height: 12; name: "chevron-down"; color: win.ui.foreground }
+                        }
+                        onClicked: mediaMenu.open()
+                        Menu {
+                            id: mediaMenu; objectName: "mediaMenu"; y: parent.height + 4
+                            MenuItem { text: "Fit"; checkable: true; checked: !deck.media.span && !deck.media.side; onTriggered: deck.setMediaMode("fit") }
+                            MenuItem { text: "Span"; checkable: true; checked: deck.media.span; onTriggered: deck.setMediaMode("span") }
+                            MenuItem { text: "Left"; enabled: !deck.media.video; checkable: true; checked: deck.media.side === "left"; onTriggered: deck.setMediaMode("left") }
+                            MenuItem { text: "Right"; enabled: !deck.media.video; checkable: true; checked: deck.media.side === "right"; onTriggered: deck.setMediaMode("right") }
+                            MenuSeparator {}
+                            MenuItem { text: "Match image edges"; checkable: true; checked: deck.media.background === "auto"; onTriggered: deck.matchImageBackground(true) }
+                            MenuItem { text: deck.media.video ? "Blurred first frame" : "Blurred image"; checkable: true; checked: deck.media.background === "blur"; onTriggered: deck.setMediaBackground("blur") }
+                            MenuItem { text: "Use theme color"; checkable: true; checked: deck.media.background === "theme"; onTriggered: deck.matchImageBackground(false) }
+                        }
+                    }
                     Item { Layout.fillWidth: true }
                 }
             }
@@ -734,7 +805,7 @@ ApplicationWindow {
                     onWheel: function(event) { win.scrollEditor(slideScroll.contentItem, event) }
                 }
                 TextArea {
-                    id: slideEditor; objectName: "slideEditor"; textFormat: TextEdit.PlainText; color: win.ui.foreground; selectionColor: win.ui.selection; selectedTextColor: win.ui.selectionText; font.family: "JetBrains Mono"; font.pixelSize: 16
+                    id: slideEditor; objectName: "slideEditor"; persistentSelection: true; textFormat: TextEdit.PlainText; color: win.ui.foreground; selectionColor: win.ui.selection; selectedTextColor: win.ui.selectionText; font.family: "JetBrains Mono"; font.pixelSize: 16
                     wrapMode: TextEdit.Wrap; leftPadding: 24; topPadding: 16; placeholderText: "# Your headline"
                     onTextChanged: {
                         if (!win.syncingEditor && activeFocus) {

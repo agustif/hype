@@ -302,6 +302,10 @@ void Deck::editSlide(const QString &s) {
     }
     QString edited = m_source;
     edited.replace(range.start, range.end - range.start, body);
+    // Qt can report the same text again when a selection or focus changes.
+    // A no-op must not create an undo step or rerender the slide.
+    if (edited == m_source)
+        return;
     // Reparse only the edited slide. An unfinished fence must never extend this
     // editor's replacement range into the following slides on the next keystroke.
     const QString prefix = "Slide\n";
@@ -541,6 +545,7 @@ QVariantMap Deck::media() const {
                     {"autoplay", m.autoplay},
                     {"title", title},
                     {"rect", mediaRect(m)},
+                    {"background", m.background},
                     {"overlay", m.overlay}};
     return m_mediaCache;
 }

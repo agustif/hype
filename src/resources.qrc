@@ -1,1 +1,1 @@
-<RCC><qresource prefix="/"><file>Main.qml</file><file>AppIcon.qml</file></qresource></RCC>
+<RCC><qresource prefix="/"><file>Main.qml</file><file>AppIcon.qml</file><file>Markdown.js</file></qresource></RCC>

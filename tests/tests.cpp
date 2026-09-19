@@ -14,6 +14,7 @@
 #include <QDBusVirtualObject>
 #include <QFile>
 #include <QJsonDocument>
+#include <QJSEngine>
 #include <QJsonObject>
 #include <QImage>
 #include <QGlyphRun>
@@ -1232,6 +1233,50 @@ class HypeTests : public QObject {
         QTest::keyClick(window, Qt::Key_Space);
         QTRY_VERIFY(animation->property("paused").toBool());
     }
+    void markdownFormatting() {
+        QFile script(":/Markdown.js");
+        QVERIFY(script.open(QIODevice::ReadOnly));
+        QJSEngine engine;
+        const auto loaded = engine.evaluate(QString::fromUtf8(script.readAll()).replace(".pragma library", ""));
+        QVERIFY2(!loaded.isError(), qPrintable(loaded.toString()));
+        const auto format = engine.globalObject().property("format");
+        auto edit = [&](const QString &source, int start, int end, const QString &kind) {
+            return format.call({source, start, end, kind});
+        };
+        auto bold = edit("# Hello world", 8, 13, "bold");
+        QCOMPARE(bold.property("text").toString(), "# Hello **world**");
+        QCOMPARE(bold.property("start").toInt(), 10);
+        QCOMPARE(bold.property("end").toInt(), 15);
+        auto italic = edit(bold.property("text").toString(), 10, 15, "italic");
+        QCOMPARE(italic.property("text").toString(), "# Hello ***world***");
+        auto plainBold = edit(italic.property("text").toString(), 11, 16, "italic");
+        QCOMPARE(plainBold.property("text").toString(), bold.property("text").toString());
+        QCOMPARE(edit("# Hello **world**", 10, 15, "bold").property("text").toString(), "# Hello world");
+        QCOMPARE(edit("one\ntwo\nthree", 1, 8, "headline").property("text").toString(), "# one\n# two\nthree");
+        QCOMPARE(edit("# one\n# two\nthree", 0, 12, "headline").property("text").toString(), "one\ntwo\nthree");
+        QCOMPARE(edit("\nFollowing", 0, 0, "headline").property("text").toString(), "# Headline\nFollowing");
+        const auto headline = edit("Hello world", 6, 11, "headline");
+        QCOMPARE(headline.property("start").toInt(), 8);
+        QCOMPARE(headline.property("end").toInt(), 13);
+        const auto headlineCursor = edit("Hello world", 6, 6, "headline");
+        QCOMPARE(headlineCursor.property("start").toInt(), 8);
+        QCOMPARE(headlineCursor.property("end").toInt(), 8);
+        const auto emptyHeadline = edit("", 0, 0, "headline");
+        QCOMPARE(emptyHeadline.property("start").toInt(), 2);
+        QCOMPARE(emptyHeadline.property("end").toInt(), 10);
+        auto comment = edit("Private note", 0, 12, "comment");
+        QCOMPARE(comment.property("text").toString(), "<!-- Private note -->");
+        QCOMPARE(edit(comment.property("text").toString(), 5, 17, "comment").property("text").toString(), "Private note");
+        const QString snippet = "```rust\nfn main() {}\n```";
+        const QString fenced = edit(snippet, 0, snippet.size(), "code").property("text").toString();
+        QCOMPARE(fenced, "````\n" + snippet + "\n````");
+        QVERIFY(parseDeck(fenced + "\n---\n# Following").error.isEmpty());
+        QCOMPARE(parseDeck(fenced + "\n---\n# Following").slides.size(), 2);
+        auto empty = edit("", 0, 0, "bold");
+        QCOMPARE(empty.property("text").toString(), "**bold text**");
+        QCOMPARE(empty.property("start").toInt(), 2);
+        QCOMPARE(empty.property("end").toInt(), 11);
+    }
     void typingCodeInVisualEditorKeepsTheDeck() {
         if (!qEnvironmentVariableIsSet("HYPE_GUI_TESTS"))
             QSKIP("Set HYPE_GUI_TESTS=1 with local graphics access");
@@ -1271,6 +1316,24 @@ class HypeTests : public QObject {
         QVERIFY(reopened.loadPath(path));
         QCOMPARE(reopened.count(), 4);
         QVERIFY(reopened.source().endsWith(tail));
+        // Toolbar clicks preserve the editor selection and create one deck undo step.
+        editor->setProperty("text", "Hello world");
+        QVERIFY(QMetaObject::invokeMethod(editor, "select", Q_ARG(int, 6), Q_ARG(int, 11)));
+        auto boldButton = window->findChild<QQuickItem *>("boldButton");
+        QVERIFY(boldButton);
+        const QPoint buttonPoint = boldButton->mapToScene(QPointF(boldButton->width() / 2, boldButton->height() / 2)).toPoint();
+        QTest::mouseClick(window, Qt::LeftButton, Qt::NoModifier, buttonPoint);
+        QCOMPARE(deck.slideText(), QString("Hello **world**"));
+        QVERIFY(editor->hasActiveFocus());
+        QCOMPARE(editor->property("selectedText").toString(), QString("world"));
+        deck.undo();
+        QCOMPARE(deck.slideText(), QString("Hello world"));
+        QVERIFY(QMetaObject::invokeMethod(editor, "select", Q_ARG(int, 0), Q_ARG(int, 11)));
+        QVERIFY(QMetaObject::invokeMethod(window, "formatSlide", Q_ARG(QVariant, "code")));
+        QCOMPARE(deck.slideText(), QString("```\nHello world\n```"));
+        QCOMPARE(deck.count(), 4);
+        QVERIFY(deck.source().endsWith(tail));
+        QVERIFY(deck.savePath(path));
         // Complete slide breaks pasted into this editor resync its visible range.
         editor->setProperty("text", "# First pasted\n---\n# Second pasted");
         QCOMPARE(deck.count(), 5);
