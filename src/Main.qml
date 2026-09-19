@@ -874,7 +874,8 @@ ApplicationWindow {
             property int dropColumn: 0
             property int dropRow: 0
             cellWidth: tileWidth + gap; cellHeight: tileHeight + gap
-            model: deck; currentIndex: deck.selected
+            // No tiles are built or rendered until the overview is actually showing.
+            model: win.overview ? deck : null; currentIndex: deck.selected
             cacheBuffer: height
             highlightFollowsCurrentItem: false
             keyNavigationEnabled: false
@@ -918,7 +919,7 @@ ApplicationWindow {
                 HoverHandler { id: tileHover; onHoveredChanged: overviewGrid.hoveredSlide = hovered ? tile.index : overviewGrid.hoveredSlide === tile.index ? -1 : overviewGrid.hoveredSlide }
                 SlideFrame {
                     width: overviewGrid.tileWidth; height: overviewGrid.tileHeight
-                    slide: tile.index; selected: tile.selected; hovered: tileHover.hovered; renderSize: Qt.size(640, 360)
+                    slide: tile.index; selected: tile.selected; hovered: tileHover.hovered; renderSize: Qt.size(480, 270)
                 }
             }
             Rectangle {
@@ -1156,7 +1157,23 @@ ApplicationWindow {
                 property real slideWidth: Math.min(width-margin*2,(height-margin*2)*16/9)
                 Item {
                     id: slideFrame; objectName: "slideFrame"; width: stage.slideWidth; height: width*9/16; anchors.centerIn: parent
-                    Image { objectName: "slidePreview"; anchors.fill: parent; source: "image://slides/" + (deck.revision, deck.renderId(deck.selected)) + (animation.active ? "/background" : ""); asynchronous: true; retainWhileLoading: true; cache: true; sourceSize: Qt.size(1920, 1080) }
+                    Image {
+                        id: slidePreview; objectName: "slidePreview"; anchors.fill: parent
+                        source: "image://slides/" + (deck.revision, deck.renderId(deck.selected)) + (animation.active ? "/background" : "")
+                        asynchronous: true; retainWhileLoading: true; cache: true; sourceSize: Qt.size(1920, 1080)
+                        property int shownSlide: -1
+                        onStatusChanged: if (status === Image.Ready) shownSlide = deck.selected
+                    }
+                    // Moving to a slide whose full render is not ready yet shows its sidebar
+                    // thumbnail at once, soft but correct, until the sharp one arrives. Edits to
+                    // the current slide keep the previous sharp frame instead, so typing never blurs.
+                    Image {
+                        objectName: "slideQuickPreview"; anchors.fill: parent
+                        visible: slidePreview.status === Image.Loading && slidePreview.shownSlide !== deck.selected && status === Image.Ready
+                        // The same URL and size as the sidebar thumbnail, so it comes from Qt's pixmap cache.
+                        source: "image://slides/" + (deck.revision, deck.renderId(deck.selected))
+                        asynchronous: true; cache: true; sourceSize: Qt.size(340, 192)
+                    }
                     Loader {
                         id: animation; objectName: "animationLoader"
                         active: workspace.visible && !!deck.media.animated

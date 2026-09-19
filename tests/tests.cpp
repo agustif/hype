@@ -17,6 +17,7 @@
 #include <QJSEngine>
 #include <QJsonObject>
 #include <QImage>
+#include <QImageReader>
 #include <QGlyphRun>
 #include <QMimeData>
 #include <QMediaPlayer>
@@ -2189,6 +2190,79 @@ class HypeTests : public QObject {
         QVERIFY(!lateTexture || lateTexture->textureSize().isEmpty());
         provider.shutdown(); // Idempotent for aboutToQuit, scope guard, and destructor.
     }
+    void navigationLatency() {
+        if (!qEnvironmentVariableIsSet("HYPE_BENCHMARK"))
+            QSKIP("Set HYPE_BENCHMARK=1 for navigation timings");
+        QQuickStyle::setStyle("Basic");
+        qmlRegisterType<SlideItem>("Hype", 1, 0, "SlideCanvas");
+        qmlRegisterType<AppTheme>("Hype", 1, 0, "AppTheme");
+        Deck d;
+        QString path = qEnvironmentVariable("HYPE_BENCHMARK_DECK", QFINDTESTDATA("../trials/rails-world-2025/presentation.md"));
+        QVERIFY(d.loadPath(path));
+        QQmlApplicationEngine engine;
+        engine.rootContext()->setContextProperty("deck", &d);
+        engine.addImageProvider("slides", new Thumbnails(&d));
+        engine.load(QUrl("qrc:/Main.qml"));
+        QVERIFY(!engine.rootObjects().isEmpty());
+        auto window = qobject_cast<QQuickWindow *>(engine.rootObjects()[0]);
+        auto preview = window->findChild<QQuickItem *>("slidePreview");
+        auto quick = window->findChild<QQuickItem *>("slideQuickPreview");
+        QVERIFY(window && preview && quick);
+        QTest::qWait(1500);
+        // Walk forward at a reading pace, then at a held-key pace; report how long the
+        // GUI thread is blocked by a selection and how long until the stage shows it.
+        // A heartbeat exposes GUI-thread stalls that land between selections, such as the
+        // deferred prefetch scan.
+        QVector<qint64> gaps;
+        QElapsedTimer beat;
+        QTimer heart;
+        heart.setInterval(2);
+        connect(&heart, &QTimer::timeout, &heart, [&] { gaps.append(beat.restart()); });
+        for (int pause : {400, 30}) {
+            QVector<qint64> blocked, shown, first;
+            gaps.clear();
+            beat.start();
+            heart.start();
+            const int last = qMin(d.count() - 1, 60);
+            d.select(0);
+            QTest::qWait(1500);
+            for (int i = 1; i <= last; ++i) {
+                QElapsedTimer timer;
+                timer.start();
+                d.select(i);
+                QCoreApplication::processEvents();
+                blocked.append(timer.elapsed());
+                const QString expected = "image://slides/" + d.renderId(i);
+                qint64 firstShown = -1;
+                while (timer.elapsed() < 3000) {
+                    const bool sharp = preview->property("status").toInt() == 1 &&
+                                       preview->property("source").toString().startsWith(expected);
+                    if (firstShown < 0 && (sharp || quick->isVisible()))
+                        firstShown = timer.elapsed();
+                    if (sharp)
+                        break;
+                    QTest::qWait(1);
+                }
+                first.append(firstShown < 0 ? timer.elapsed() : firstShown);
+                shown.append(timer.elapsed());
+                QTest::qWait(pause);
+            }
+            auto describe = [](QVector<qint64> values) {
+                std::sort(values.begin(), values.end());
+                qint64 total = 0;
+                for (auto v : values) total += v;
+                return QString("mean %1 ms, p90 %2 ms, max %3 ms").arg(total / values.size())
+                    .arg(values[values.size() * 9 / 10]).arg(values.last());
+            };
+            qInfo().noquote() << "Pause" << pause << "ms  blocked:" << describe(blocked);
+            qInfo().noquote() << "Pause" << pause << "ms  first:  " << describe(first);
+            qInfo().noquote() << "Pause" << pause << "ms  sharp:  " << describe(shown);
+            heart.stop();
+            qInfo().noquote() << "Pause" << pause << "ms  stalls: " << describe(gaps);
+        }
+        window->setProperty("allowClose", true);
+        window->close();
+    }
     void trialRenderingPerformance() {
         if (!qEnvironmentVariableIsSet("HYPE_BENCHMARK"))
             QSKIP("Set HYPE_BENCHMARK=1 for trial rendering timings");
@@ -2215,6 +2289,24 @@ class HypeTests : public QObject {
             for (const QString &id : ids.mid(0, 10))
                 QVERIFY(!provider.requestImage(id, nullptr, QSize(1920, 1080)).isNull());
             qInfo() << (pass ? "Cached" : "Cold") << "first ten full previews:" << timer.elapsed() << "ms";
+        }
+        // Cold full-size cost per slide, slowest first: what a jump to an unprefetched slide pays.
+        QVector<QPair<qint64, int>> costs;
+        for (int i = 10; i < d.count(); ++i) {
+            QElapsedTimer timer;
+            timer.start();
+            provider.requestImage(ids[i], nullptr, QSize(1920, 1080));
+            costs.append({timer.elapsed(), i});
+        }
+        std::sort(costs.begin(), costs.end(), [](const auto &a, const auto &b) { return a.first > b.first; });
+        qint64 total = 0;
+        for (const auto &cost : costs) total += cost.first;
+        qInfo() << "Cold full previews for the rest:" << total << "ms, mean" << (costs.isEmpty() ? 0 : total / costs.size()) << "ms";
+        for (const auto &cost : costs.mid(0, 8)) {
+            const auto media = parseMedia(d.slide(cost.second), d.baseDir());
+            qInfo().noquote() << QString("  slide %1: %2 ms  %3 %4 %5%6").arg(cost.second + 1).arg(cost.first)
+                .arg(media.file, QImageReader(media.path).size().isValid() ? QString("%1x%2").arg(QImageReader(media.path).size().width()).arg(QImageReader(media.path).size().height()) : QString("-"),
+                     media.span ? "span" : "fit", media.text.trimmed().isEmpty() ? "" : " +text");
         }
         int nextImage = 10;
         while (nextImage < d.count()) {

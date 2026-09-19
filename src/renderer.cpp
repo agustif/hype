@@ -36,9 +36,13 @@ class ImageCache {
         auto image = images.object(key);
         return image ? *image : QImage();
     }
-    void put(const QString &key, const QImage &image) {
+    void put(const QString &key, const QImage &image, int minimumEntries = 0) {
         QMutexLocker lock(&mutex);
-        images.insert(key, new QImage(image), qMax(1, int(image.sizeInBytes() / 1024)));
+        const int cost = qMax(1, int(image.sizeInBytes() / 1024));
+        // High-DPI frames are several times larger; keep room for a useful number of them.
+        if (minimumEntries && images.maxCost() < cost * minimumEntries)
+            images.setMaxCost(cost * minimumEntries);
+        images.insert(key, new QImage(image), cost);
     }
 };
 }
@@ -669,10 +673,20 @@ void SlideItem::paint(QPainter *p) {
         paintSlide(p, boundingRect(), m_deck->slideSource(), m_deck->baseDir(), m_deck->palette(),
                    nullptr, m_overlayOnly);
 }
+// Qt multiplies an Image's sourceSize by the screen's scale, so a 340px thumbnail arrives as
+// 680px on a 2x display and the stage as 3840px. Classify requests against the largest one
+// seen instead of fixed pixel sizes: the stage is the big one, everything else is small.
+static std::atomic_int largestWidth{1920};
+static std::atomic_int stageWidth{1920}, stageHeight{1080};
+static bool stageSized(const QSize &dimensions) {
+    int largest = largestWidth.load();
+    while (dimensions.width() > largest && !largestWidth.compare_exchange_weak(largest, dimensions.width())) {}
+    return dimensions.width() * 2 > largestWidth.load();
+}
 static ImageCache &slideCache(const QSize &dimensions) {
-    // Full previews must not evict the much smaller sidebar thumbnails.
-    static ImageCache thumbnails(32 * 1024), previews(128 * 1024);
-    return dimensions.width() <= 400 ? thumbnails : previews;
+    // Full previews must not evict the much smaller sidebar and overview thumbnails.
+    static ImageCache thumbnails(96 * 1024), previews(128 * 1024);
+    return stageSized(dimensions) ? previews : thumbnails;
 }
 static QString slideCacheKey(const QString &id, const QSize &dimensions) {
     return id + QString::number(dimensions.width()) + "x" + QString::number(dimensions.height());
@@ -699,7 +713,8 @@ static QImage renderedSlide(const QString &id, QSize *size, const QSize &request
     paintSlide(&p, image.rect(), source, base, palette, nullptr, id.endsWith("/overlay"),
                id.endsWith("/background"));
     p.end();
-    renders.put(key, image);
+    // Room for the slides around the selection at full size, or a whole deck of thumbnails.
+    renders.put(key, image, stageSized(dimensions) ? 14 : 400);
     if (size)
         *size = image.size();
     return image;
@@ -726,8 +741,10 @@ class SlideResponse : public QQuickImageResponse {
 }
 
 Thumbnails::Thumbnails(Deck *deck) {
-    m_thumbnails.setMaxThreadCount(2);
-    m_previews.setMaxThreadCount(2);
+    // Full-size renders are the slow ones; give the stage and its prefetches most of the cores.
+    const int cores = QThread::idealThreadCount();
+    m_thumbnails.setMaxThreadCount(qBound(2, cores / 4, 4));
+    m_previews.setMaxThreadCount(qBound(2, cores / 2, 6));
     m_cached.setMaxThreadCount(1);
     m_videos.setMaxThreadCount(2);
     auto timer = new QTimer(this);
@@ -755,9 +772,11 @@ Thumbnails::Thumbnails(Deck *deck) {
             if (media.video || (!media.path.isEmpty() && reader.supportsAnimation() && reader.imageCount() > 1))
                 continue;
             const QString id = deck->renderId(index);
-            m_previews.start([generation, current, id] {
+            // Prefetch at the size the stage actually asks for, or the work is never used.
+            const QSize size(stageWidth.load(), stageHeight.load());
+            m_previews.start([generation, current, id, size] {
                 if (generation->load() == current)
-                    renderedSlide(id, nullptr, QSize(1920, 1080));
+                    renderedSlide(id, nullptr, size);
             }, -1);
         }
     });
@@ -808,7 +827,12 @@ QQuickImageResponse *Thumbnails::requestImageResponse(const QString &id, const Q
     stream >> source >> base;
     // Video poster decoding cannot occupy the workers needed for ordinary slides.
     const bool video = parseMedia(source, base).video;
-    auto &pool = video ? m_videos : dimensions.width() <= 400 ? m_thumbnails : m_previews;
+    const bool stage = stageSized(dimensions);
+    if (stage) {
+        stageWidth.store(dimensions.width());
+        stageHeight.store(dimensions.height());
+    }
+    auto &pool = video ? m_videos : stage ? m_previews : m_thumbnails;
     pool.start(
         [response, id, requested, stopping] {
             if (stopping->load())
