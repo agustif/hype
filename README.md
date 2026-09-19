@@ -9,7 +9,7 @@ Hype is a native app for Omarchy. Your presentation is a Markdown file with its 
 Install Hype from the [Omarchy Package Repository (OPR)](https://github.com/omacom/omarchy-pkgs):
 
 ```sh
-sudo pacman -S hype
+omarchy pkg add hype
 ```
 
 Then open **Hype** from the app launcher, or run `hype` in a terminal.
