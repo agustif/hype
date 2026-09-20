@@ -39,7 +39,7 @@ int main(int argc, char **argv) {
     qputenv("QT_QPA_PLATFORMTHEME", "generic");
     QApplication app(argc, argv);
     app.setApplicationName("hype");
-    app.setApplicationVersion("0.3.0");
+    app.setApplicationVersion("0.3.1");
     app.setDesktopFileName(qEnvironmentVariable("HYPE_DESKTOP_FILE", "hype"));
     QCommandLineParser args;
     args.addHelpOption();
