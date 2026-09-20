@@ -3,6 +3,10 @@
 #include "renderer.h"
 #include <QApplication>
 #include <QCommandLineParser>
+#include <QDBusConnection>
+#include <QDBusMessage>
+#include <QDBusVariant>
+#include <QFont>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QPointer>
@@ -13,7 +17,26 @@
 #include <QScopeGuard>
 #include <QTimer>
 #include <cstdio>
+// The desktop's interface font, e.g. "Adwaita Sans 11", which the gtk3 platform
+// theme used to supply. Without a settings portal Qt's default font stays.
+static void adoptDesktopFont() {
+    auto call = QDBusMessage::createMethodCall("org.freedesktop.portal.Desktop", "/org/freedesktop/portal/desktop",
+                                               "org.freedesktop.portal.Settings", "ReadOne");
+    call.setArguments({"org.gnome.desktop.interface", "font-name"});
+    const auto reply = QDBusConnection::sessionBus().call(call, QDBus::Block, 500);
+    if (reply.type() != QDBusMessage::ReplyMessage || reply.arguments().isEmpty()) return;
+    const QString name = reply.arguments().first().value<QDBusVariant>().variant().toString();
+    const int space = name.lastIndexOf(' ');
+    const double size = name.mid(space + 1).toDouble();
+    if (space <= 0 || size <= 0) return;
+    QFont font(name.left(space));
+    font.setPointSizeF(size);
+    QApplication::setFont(font);
+}
 int main(int argc, char **argv) {
+    // Hype themes itself. Qt's gtk3 platform theme only adds a use-after-free
+    // inside GTK when the desktop theme changes under a running editor.
+    qputenv("QT_QPA_PLATFORMTHEME", "generic");
     QApplication app(argc, argv);
     app.setApplicationName("hype");
     app.setApplicationVersion("0.3.0");
@@ -83,6 +106,7 @@ int main(int argc, char **argv) {
         return success ? 0 : 1;
     }
     deck.enableAutosave();
+    adoptDesktopFont();
     QQuickStyle::setStyle("Basic");
     qmlRegisterType<SlideItem>("Hype", 1, 0, "SlideCanvas");
     qmlRegisterType<AppTheme>("Hype", 1, 0, "AppTheme");
