@@ -66,12 +66,13 @@ ParsedDeck parseDeck(const QString &source) {
         }
         if (!closed) {
             result.error = "Front matter needs a closing ---";
+            result.errorOffset = contentStart;
             result.slides.append({source, 0, int(source.size())});
             return result;
         }
     }
     result.header = source.left(contentStart);
-    int start = contentStart, pos = start, fenceLength = 0;
+    int start = contentStart, pos = start, fenceLength = 0, fenceStart = 0;
     QChar fence;
     static const QRegularExpression fenceRe("^ {0,3}(`{3,}|~{3,})(.*)$");
     while (pos < source.size()) {
@@ -82,6 +83,7 @@ ParsedDeck parseDeck(const QString &source) {
             if (fenceLength == 0) {
                 fence = run[0];
                 fenceLength = run.size();
+                fenceStart = pos;
             } else if (run[0] == fence && run.size() >= fenceLength &&
                        match.captured(2).trimmed().isEmpty())
                 fenceLength = 0;
@@ -92,8 +94,10 @@ ParsedDeck parseDeck(const QString &source) {
         pos = next;
     }
     result.slides.append({source.mid(start), start, int(source.size())});
-    if (fenceLength && result.error.isEmpty())
+    if (fenceLength && result.error.isEmpty()) {
         result.error = "Unclosed code fence";
+        result.errorOffset = fenceStart;
+    }
     return result;
 }
 QString scalar(const QString &header, const QString &key, const QString &fallback) {
@@ -591,7 +595,7 @@ bool Deck::reopenLastPresentation() {
     setStatus("The last presentation is missing. Use Save As to recover it to a new file.");
     return false;
 }
-bool Deck::loadPath(const QString &path) {
+bool Deck::loadPath(const QString &path, bool remember) {
     QFile f(path);
     if (!f.open(QIODevice::ReadOnly)) {
         setStatus(f.errorString());
@@ -607,7 +611,8 @@ bool Deck::loadPath(const QString &path) {
     watch();
     emit changed();
     setStatus("Opened " + title());
-    rememberPresentation(m_path);
+    if (remember)
+        rememberPresentation(m_path);
     recoverDraft();
     if (!m_recoveryDirectory.isEmpty())
         checkpoint();

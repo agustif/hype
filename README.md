@@ -151,6 +151,26 @@ PDF keeps text as vectors and sizes embedded images for their visible area at 4K
 
 PowerPoint export automatically converts other video formats, including WebM, to H.264 MP4 with AAC audio, leaving your originals untouched. Compatible MP4s are embedded directly. Use `fit` for videos that aren’t 16:9. Video autoplay and looping may vary between presentation apps; playback in Microsoft PowerPoint has not yet been verified.
 
+## Use Hype from the command line
+
+Hype's commands need no display, so a script or an AI agent can build a presentation from start to finish. A presentation is just a Markdown file: write it with any tool, then check, preview, and export it with `hype`.
+
+```sh
+hype new talk/presentation.md --title "My talk" --theme tokyo-night
+hype check talk/presentation.md                   # every problem, with its slide and line
+hype slides talk/presentation.md                  # an outline: number, lines, headline, media
+hype render talk/presentation.md --slide 3 -o slide.png
+hype render talk/presentation.md -o slides/       # every slide, plus slides.json
+hype export talk/presentation.md talk.pdf         # or talk.pptx
+hype themes
+```
+
+`check` reports all problems at once, such as missing media, invalid layout options, and unfinished code fences, and warns when a slide holds so much text that it shrinks below a readable size. `render --slide` writes a PNG even for a slide with problems, showing them on a banner, so you can look at what went wrong. Add `--json` to any command for structured output, and `--width` to `render` for another size. Commands exit 0 on success and 1 on failure, with errors on stderr.
+
+`hype help format` prints the whole slide format, from front matter to media options, in a form an agent can read once and work from. `hype help <command>` lists a command's options.
+
+If the presentation is open in the editor, changes written to the file appear there right away, as long as the editor has no unsaved changes of its own.
+
 ## Keyboard shortcuts
 
 Slide navigation and selection shortcuts apply when the sidebar or preview has focus. Inside the Markdown editor, arrows and Shift+arrows move the cursor and select text.
