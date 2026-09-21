@@ -27,10 +27,13 @@
 #include <QRegularExpression>
 #include <QSaveFile>
 #include <QSet>
+#include <QScopeGuard>
 #include <QSettings>
 #include <QStandardPaths>
 #include <QTemporaryDir>
+#include <QThreadPool>
 #include <QtConcurrentRun>
+#include <atomic>
 #include <cerrno>
 #include <csignal>
 #include <cstdio>
@@ -1290,10 +1293,54 @@ bool Deck::exportPdf(const QString &path) {
     setStatus("Exported " + path);
     return true;
 }
+// Slides are opaque unless a custom background is translucent. Without an alpha
+// channel, PNG encodes a third faster and the file is smaller.
+static bool opaque(const QImage &image) {
+    for (int y = 0; y < image.height(); ++y) {
+        const auto *line = reinterpret_cast<const QRgb *>(image.constScanLine(y));
+        for (int x = 0; x < image.width(); ++x)
+            if (qAlpha(line[x]) != 255)
+                return false;
+    }
+    return true;
+}
 bool Deck::renderImages(const QString &directory, int width, bool convertAnimations) {
     if (!validateStructure("export"))
         return false;
+    for (int i = 0; i < count(); ++i) {
+        auto errors = slideProblems(slide(i), baseDir());
+        if (!errors.isEmpty()) {
+            setStatus(QString("Slide %1: %2").arg(i + 1).arg(errors.join("; ")));
+            return false;
+        }
+    }
     QDir().mkpath(directory);
+    // PNG compression dominates export time. Paint and encode slides across the
+    // cores, while this thread converts media and reports progress in slide order.
+    // Each worker holds a full-size frame, so a few suffice.
+    QThreadPool stills;
+    stills.setMaxThreadCount(qBound(1, QThread::idealThreadCount(), 8));
+    std::atomic_bool stopped = false;
+    const auto stop = qScopeGuard([&] {
+        stopped = true;
+        stills.waitForDone();
+    });
+    auto stillName = [](int i) { return QString("slide-%1.png").arg(i + 1, 3, 10, QChar('0')); };
+    using Still = std::pair<bool, QString>; // Saved, and any rendering warning.
+    QList<QFuture<Still>> rendered;
+    for (int i = 0; i < count(); ++i)
+        rendered << QtConcurrent::run(&stills, [&stopped, source = slide(i), base = baseDir(), colors = palette(),
+                                                width, path = directory + "/" + stillName(i)]() -> Still {
+            if (stopped)
+                return {false, {}};
+            QImage image(width, width * 9 / 16, QImage::Format_ARGB32_Premultiplied);
+            image.fill(Qt::transparent);
+            QPainter p(&image);
+            QString warning;
+            paintSlide(&p, image.rect(), source, base, colors, &warning);
+            p.end();
+            return {opaque(image) ? image.convertToFormat(QImage::Format_RGB32).save(path) : image.save(path), warning};
+        });
     QJsonArray slides;
     QHash<QString, QString> convertedVideos;
     for (int i = 0; i < count(); ++i) {
@@ -1303,19 +1350,9 @@ bool Deck::renderImages(const QString &directory, int width, bool convertAnimati
                 QString("%1 slide %2 of %3").arg(stage).arg(i + 1).arg(count()));
         };
         progress(0, "Exporting");
-        auto errors = slideProblems(slide(i), baseDir());
-        if (!errors.isEmpty()) {
-            setStatus(QString("Slide %1: %2").arg(i + 1).arg(errors.join("; ")));
-            return false;
-        }
-        QImage image(width, width * 9 / 16, QImage::Format_ARGB32_Premultiplied);
-        image.fill(Qt::transparent);
-        QPainter p(&image);
-        QString warning;
-        paintSlide(&p, image.rect(), slide(i), baseDir(), palette(), &warning);
-        p.end();
-        QString name = QString("slide-%1.png").arg(i + 1, 3, 10, QChar('0'));
-        if (!image.save(directory + "/" + name)) {
+        const auto [saved, warning] = rendered[i].result();
+        const QString name = stillName(i);
+        if (!saved) {
             setStatus("Could not save rendered slide");
             return false;
         }
