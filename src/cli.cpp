@@ -359,13 +359,15 @@ int help(const QStringList &arguments) {
     }
     if (isCliCommand(topic) && topic != "help")
         return runCli({arguments[0], topic, "--help"});
-    print(stdout, "Usage: hype <command> [options], or hype [presentation] to open the editor.\n\n" + cliSummary());
+    print(stdout, "Usage: hype <command> [options]\n\n" + cliSummary());
     return 0;
 }
 } // namespace
 
 QString cliSummary() {
-    return "Commands, which need no display (hype help <command> for options):\n"
+    return "Editor:\n"
+           "  open [presentation]             Open the editor, on the last presentation by default\n\n"
+           "Commands that need no display (hype help <command> for options):\n"
            "  new <presentation>              Start a presentation\n"
            "  check <presentation>            Report every problem, with slide and line\n"
            "  slides <presentation>           Outline the slides\n"

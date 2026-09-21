@@ -18,4 +18,4 @@ exec 9>&-
 
 cd "$HYPE_ROOT"
 export HYPE_DESKTOP_FILE=hype-dev
-exec "$HYPE_ROOT/build/hype" "$@" >>"$HYPE_ROOT/build/dev-run.log" 2>&1
+exec "$HYPE_ROOT/build/hype" open "$@" >>"$HYPE_ROOT/build/dev-run.log" 2>&1

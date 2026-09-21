@@ -167,7 +167,7 @@ hype themes
 
 `check` reports all problems at once, such as missing media, invalid layout options, and unfinished code fences, and warns when a slide holds so much text that it shrinks below a readable size. `render --slide` writes a PNG even for a slide with problems, showing them on a banner, so you can look at what went wrong. Add `--json` to any command for structured output, and `--width` to `render` for another size. Commands exit 0 on success and 1 on failure, with errors on stderr.
 
-`hype help format` prints the whole slide format, from front matter to media options, in a form an agent can read once and work from. `hype help <command>` lists a command's options.
+`hype` alone lists the commands, and `hype open` starts the editor. `hype help format` prints the whole slide format, from front matter to media options, in a form an agent can read once and work from. `hype help <command>` lists a command's options.
 
 If the presentation is open in the editor, changes written to the file appear there right away, as long as the editor has no unsaved changes of its own.
 
@@ -210,7 +210,7 @@ To build Hype yourself, install a C++17 compiler, make, Qt 6.9 or newer, FFmpeg,
 
 ```sh
 ./bin/build
-./build/hype examples/welcome.md
+./build/hype open examples/welcome.md
 ```
 
 For a launcher entry that rebuilds this checkout when opened, run `./bin/install-dev` and choose **Hype (Development)**.

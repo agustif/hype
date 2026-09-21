@@ -124,6 +124,8 @@ class CliTests(unittest.TestCase):
         self.assertIn('hype check', self.hype('help', 'format').stdout)
         self.assertIn('--slide', self.hype('help', 'render').stdout)
         self.assertIn('help format', self.hype('help').stdout)
+        self.assertEqual(self.hype().stdout, self.hype('help').stdout)
+        self.assertIn('open [presentation]', self.hype().stdout)
         self.assertIn('help format', self.hype('--help').stdout)
 
 

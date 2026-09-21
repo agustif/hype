@@ -40,7 +40,8 @@ int main(int argc, char **argv) {
     qputenv("QT_QPA_PLATFORMTHEME", "generic");
     // Commands, exports and help draw no window, so they must not need a display,
     // even where the desktop exports QT_QPA_PLATFORM=wayland.
-    const bool command = argc > 1 && isCliCommand(argv[1]);
+    // Bare hype prints help, as a command line tool should; launchers say hype open.
+    const bool command = argc == 1 || isCliCommand(argv[1]);
     bool windowless = command;
     for (int i = 1; i < argc; ++i) {
         const QByteArray argument(argv[i]);
@@ -73,7 +74,10 @@ int main(int argc, char **argv) {
     QCommandLineOption snapshotOption("export-snapshot", "Internal export snapshot", "file");
     snapshotOption.setFlags(QCommandLineOption::HiddenFromHelp);
     args.addOption(snapshotOption);
-    args.process(app);
+    QStringList arguments = app.arguments();
+    if (arguments.value(1) == "open")
+        arguments.removeAt(1);
+    args.process(arguments);
     Deck deck;
     const bool exportWorker = args.isSet(snapshotOption);
     auto report = [](const QJsonObject &event) {
