@@ -107,19 +107,24 @@ QString toText(const QString &path, const Problem &problem) {
         .arg(problem.slide ? QString("slide %1 ").arg(problem.slide) : QString())
         .arg(problem.error ? "error" : "warning", problem.message);
 }
-// The headline, or else the first line of text, or else of code.
+// The headline, or else the first line of text, or else of code. Fences close as in parseDeck.
 QString slideTitle(const QString &text) {
-    QString first, code;
-    bool fenced = false;
+    static const QRegularExpression fenceRe("^(`{3,}|~{3,})(.*)$");
+    QString first, code, fence;
     for (const auto &raw : text.split('\n')) {
         const QString line = raw.trimmed();
-        if (line.startsWith("```") || line.startsWith("~~~"))
-            fenced = !fenced;
-        else if (fenced && code.isEmpty())
+        const auto match = fenceRe.match(line);
+        const QString run = match.captured(1);
+        if (match.hasMatch() && fence.isEmpty())
+            fence = run;
+        else if (match.hasMatch() && run[0] == fence[0] && run.size() >= fence.size() &&
+                 match.captured(2).trimmed().isEmpty())
+            fence.clear();
+        else if (!fence.isEmpty() && code.isEmpty())
             code = line;
-        else if (!fenced && line.startsWith('#'))
+        else if (fence.isEmpty() && line.startsWith('#'))
             return line.mid(line.indexOf(' ') + 1).trimmed();
-        else if (!fenced && first.isEmpty())
+        else if (fence.isEmpty() && first.isEmpty())
             first = QString(line).remove(QRegularExpression(R"(^(>|[-*+]|\d+\.)\s+|\\$)")).trimmed();
     }
     return first.isEmpty() ? code : first;

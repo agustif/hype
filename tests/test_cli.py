@@ -83,6 +83,9 @@ class CliTests(unittest.TestCase):
                          [(1, 5, 5, 'One', None), (2, 9, 12, 'Two', None), (3, 16, 20, 'a = 1', None),
                           (4, 24, 26, 'Just words', 'photo.png')])
         self.assertIn('Two', self.hype('slides', self.deck).stdout)
+        self.write('````markdown\n```sh\n# not a headline\n```\n````\n\n# Real headline\n')
+        self.assertEqual(json.loads(self.hype('slides', self.deck, '--json').stdout)['slides'][0]['title'],
+                         'Real headline')
 
     def test_render_one_slide_or_all(self):
         self.write(DECK)
