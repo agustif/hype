@@ -1,4 +1,5 @@
 #include "apptheme.h"
+#include "cli.h"
 #include "deck.h"
 #include "renderer.h"
 #include <QGuiApplication>
@@ -37,11 +38,27 @@ int main(int argc, char **argv) {
     // Hype themes itself. Qt's gtk3 platform theme only adds a use-after-free
     // inside GTK when the desktop theme changes under a running editor.
     qputenv("QT_QPA_PLATFORMTHEME", "generic");
+    // Commands, exports and help draw no window, so they must not need a display,
+    // even where the desktop exports QT_QPA_PLATFORM=wayland.
+    // Bare hype prints help, as a command line tool should; launchers say hype open.
+    const bool command = argc == 1 || isCliCommand(argv[1]);
+    bool windowless = command;
+    for (int i = 1; i < argc; ++i) {
+        const QByteArray argument(argv[i]);
+        for (const char *option : {"--pdf", "--pptx", "--render", "--help", "--version"})
+            windowless = windowless || argument.startsWith(option);
+        windowless = windowless || argument == "-h" || argument == "-v";
+    }
+    if (windowless)
+        qputenv("QT_QPA_PLATFORM", "offscreen");
     QGuiApplication app(argc, argv);
     app.setApplicationName("hype");
     app.setApplicationVersion("0.3.3");
     app.setDesktopFileName(qEnvironmentVariable("HYPE_DESKTOP_FILE", "hype"));
+    if (command)
+        return runCli(app.arguments());
     QCommandLineParser args;
+    args.setApplicationDescription("Simple Markdown presentations with a visual slide editor.\n\n" + cliSummary());
     args.addHelpOption();
     args.addVersionOption();
     args.addPositionalArgument("presentation", "Markdown presentation");
@@ -57,7 +74,10 @@ int main(int argc, char **argv) {
     QCommandLineOption snapshotOption("export-snapshot", "Internal export snapshot", "file");
     snapshotOption.setFlags(QCommandLineOption::HiddenFromHelp);
     args.addOption(snapshotOption);
-    args.process(app);
+    QStringList arguments = app.arguments();
+    if (arguments.value(1) == "open")
+        arguments.removeAt(1);
+    args.process(arguments);
     Deck deck;
     const bool exportWorker = args.isSet(snapshotOption);
     auto report = [](const QJsonObject &event) {
@@ -76,7 +96,12 @@ int main(int argc, char **argv) {
         });
     }
     auto positional = args.positionalArguments();
-    if (!positional.isEmpty() && !deck.loadPath(positional[0])) {
+    const bool exporting = args.isSet("pdf") || args.isSet("pptx") || args.isSet("render");
+    if (exporting && positional.isEmpty() && !exportWorker) {
+        fprintf(stderr, "Name a Markdown presentation to export.\n");
+        return 1;
+    }
+    if (!positional.isEmpty() && !deck.loadPath(positional[0], !exporting)) {
         fprintf(stderr, "%s\n", qPrintable(deck.status()));
         return 1;
     }

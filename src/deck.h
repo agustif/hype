@@ -18,6 +18,7 @@ struct ParsedDeck {
     QString header;
     QVector<Slide> slides;
     QString error;
+    int errorOffset = -1; // Where the unfinished front matter or code fence opens.
 };
 ParsedDeck parseDeck(const QString &source);
 QString scalar(const QString &header, const QString &key, const QString &fallback = {});
@@ -95,7 +96,7 @@ class Deck : public QAbstractListModel {
     QString baseDir() const;
     QString dialogDirectory() const;
     QString slide(int index) const;
-    bool loadPath(const QString &path);
+    bool loadPath(const QString &path, bool remember = true);
     bool reopenLastPresentation();
     bool savePath(const QString &path);
     bool saveCopyPath(const QString &path);
@@ -172,6 +173,7 @@ class Deck : public QAbstractListModel {
     QVector<State> m_undo, m_redo;
     QMap<QString, QString> m_themes;
     QFileSystemWatcher m_watcher;
+    QTimer m_reloadTimer;
     bool m_externalChange = false;
     QString m_recoveryDirectory, m_checkpointSource, m_checkpointPath;
     QTimer m_autosaveTimer, m_autosaveDeadline;
@@ -203,4 +205,5 @@ class Deck : public QAbstractListModel {
     bool restoreSnapshot(const QByteArray &bytes, bool opening);
     void discoverThemes();
     void watch();
+    void reloadExternal(const QString &disk);
 };
