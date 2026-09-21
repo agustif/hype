@@ -1,7 +1,7 @@
 #include "apptheme.h"
 #include "deck.h"
 #include "renderer.h"
-#include <QApplication>
+#include <QGuiApplication>
 #include <QCommandLineParser>
 #include <QDBusConnection>
 #include <QDBusMessage>
@@ -31,13 +31,13 @@ static void adoptDesktopFont() {
     if (space <= 0 || size <= 0) return;
     QFont font(name.left(space));
     font.setPointSizeF(size);
-    QApplication::setFont(font);
+    QGuiApplication::setFont(font);
 }
 int main(int argc, char **argv) {
     // Hype themes itself. Qt's gtk3 platform theme only adds a use-after-free
     // inside GTK when the desktop theme changes under a running editor.
     qputenv("QT_QPA_PLATFORMTHEME", "generic");
-    QApplication app(argc, argv);
+    QGuiApplication app(argc, argv);
     app.setApplicationName("hype");
     app.setApplicationVersion("0.3.1");
     app.setDesktopFileName(qEnvironmentVariable("HYPE_DESKTOP_FILE", "hype"));
@@ -125,7 +125,7 @@ int main(int argc, char **argv) {
         QThreadPool::globalInstance()->waitForDone();
     };
     // The engine is not the final owner of an async image provider. Drain while
-    // QApplication's fonts, platform integration and GPU resources still exist.
+    // QGuiApplication's fonts, platform integration and GPU resources still exist.
     QObject::connect(&app, &QCoreApplication::aboutToQuit, &app, drainRenders);
     const auto renderShutdown = qScopeGuard(drainRenders);
     engine.load(QUrl("qrc:/Main.qml"));

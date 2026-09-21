@@ -885,6 +885,45 @@ class HypeTests : public QObject {
         QCOMPARE(extension, QString("webp"));
         QVERIFY(encoded.size() < original.sizeInBytes() * 3 / 4);
     }
+    void softeningMatchesStraightforwardBoxBlur() {
+        // Three clamped horizontal/vertical box passes over premultiplied pixels,
+        // written the obvious way. The renderer's faster blur must match it exactly.
+        auto reference = [](QImage image, int radius) {
+            const int diameter = radius * 2 + 1;
+            for (int pass = 0; pass < 6; ++pass) {
+                const bool horizontal = pass % 2 == 0;
+                QImage output(image.size(), image.format());
+                for (int y = 0; y < image.height(); ++y)
+                    for (int x = 0; x < image.width(); ++x) {
+                        int sum[4] = {};
+                        for (int i = -radius; i <= radius; ++i) {
+                            const QRgb color = image.pixel(horizontal ? qBound(0, x + i, image.width() - 1) : x,
+                                                           horizontal ? y : qBound(0, y + i, image.height() - 1));
+                            sum[0] += qRed(color); sum[1] += qGreen(color);
+                            sum[2] += qBlue(color); sum[3] += qAlpha(color);
+                        }
+                        output.setPixel(x, y, qRgba(sum[0] / diameter, sum[1] / diameter,
+                                                    sum[2] / diameter, sum[3] / diameter));
+                    }
+                image = output;
+            }
+            return image;
+        };
+        quint32 noise = 7;
+        for (QSize size : {QSize(61, 37), QSize(5, 3)}) {
+            QImage image(size, QImage::Format_ARGB32);
+            for (int y = 0; y < size.height(); ++y)
+                for (int x = 0; x < size.width(); ++x) {
+                    noise = noise * 1664525 + 1013904223;
+                    image.setPixel(x, y, qRgba(noise >> 24, (noise >> 16) & 255, (noise >> 8) & 255,
+                                               x % 7 ? noise & 255 : 0));
+                }
+            image = image.convertToFormat(QImage::Format_ARGB32_Premultiplied);
+            // Softening scales a two-pixel radius at 1080p with the picture: 3 and 4 pixels here.
+            QCOMPARE(softenedImage(image, QSizeF(size.width() * 2 / 3.0, 1)), reference(image, 3));
+            QCOMPARE(softenedImage(image, QSizeF(size.width() / 2.0, 1)), reference(image, 4));
+        }
+    }
     void pastedSlidesKeepBalancedSpacing() {
         QTemporaryDir tmp;
         Deck d;
