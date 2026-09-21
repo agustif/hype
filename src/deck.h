@@ -173,6 +173,7 @@ class Deck : public QAbstractListModel {
     QVector<State> m_undo, m_redo;
     QMap<QString, QString> m_themes;
     QFileSystemWatcher m_watcher;
+    QTimer m_reloadTimer;
     bool m_externalChange = false;
     QString m_recoveryDirectory, m_checkpointSource, m_checkpointPath;
     QTimer m_autosaveTimer, m_autosaveDeadline;
@@ -204,4 +205,5 @@ class Deck : public QAbstractListModel {
     bool restoreSnapshot(const QByteArray &bytes, bool opening);
     void discoverThemes();
     void watch();
+    void reloadExternal(const QString &disk);
 };

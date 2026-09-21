@@ -465,6 +465,49 @@ class HypeTests : public QObject {
         QCOMPARE(external.slideText(), "# After");
         QVERIFY(!external.dirty());
     }
+    void externalEditsKeepTheCurrentSlide() {
+        QTemporaryDir files;
+        const QString path = files.filePath("talk.md");
+        write(path, "# One\n\n---\n\n# Two\n\n---\n\n# Three\n");
+        Deck deck;
+        QVERIFY(deck.loadPath(path));
+        deck.select(1);
+        // The slide being viewed changes under the viewer.
+        write(path, "# One\n\n---\n\n# Two, revised\n\n---\n\n# Three\n");
+        QTRY_COMPARE(deck.slideText(), "# Two, revised");
+        QCOMPARE(deck.selected(), 1);
+        QVERIFY(!deck.dirty());
+        // A slide added earlier moves it; the selection follows.
+        write(path, "# Zero\n\n---\n\n# One\n\n---\n\n# Two, revised\n\n---\n\n# Three\n");
+        QTRY_COMPARE(deck.count(), 4);
+        QCOMPARE(deck.selected(), 2);
+        QCOMPARE(deck.slideText(), "# Two, revised");
+        // Writers that replace the file, or remove it first, are still followed.
+        write(path + ".new", "# Zero\n\n---\n\n# One\n\n---\n\n# Two, again\n\n---\n\n# Three\n");
+        QVERIFY(QFile::remove(path));
+        QTest::qWait(150);
+        QVERIFY(QFile::rename(path + ".new", path));
+        QTRY_COMPARE(deck.slideText(), "# Two, again");
+        write(path, "# Zero\n\n---\n\n# One\n\n---\n\n# Two, finally\n");
+        QTRY_COMPARE(deck.slideText(), "# Two, finally");
+        QVERIFY(!deck.dirty());
+        deck.undo();
+        QCOMPARE(deck.slideText(), "# Two, again");
+        // Moved and reworded at once: the closest slide among the changed ones.
+        deck.redo();
+        write(path, "# New\n\n---\n\n# Zero\n\n---\n\n# One\n\n---\n\n# Two, at last\n\n---\n\n# Coda\n");
+        QTRY_COMPARE(deck.slideText(), "# Two, at last");
+        QCOMPARE(deck.selected(), 3);
+        // Its removal leaves the slide that took its place.
+        write(path, "# New\n\n---\n\n# Zero\n\n---\n\n# One\n\n---\n\n# Coda\n");
+        QTRY_COMPARE(deck.count(), 4);
+        QCOMPARE(deck.slideText(), "# Coda");
+        // Unsaved work in the editor is never replaced.
+        deck.editSlide("# Mine");
+        write(path, "# Theirs\n");
+        QTRY_VERIFY(deck.status().contains("Changed on disk"));
+        QCOMPARE(deck.slideText(), "# Mine");
+    }
     void recoversUntitledAndRefusesUnbackedAutosave() {
         QTemporaryDir files;
         const QString recovery = files.filePath("recovery");

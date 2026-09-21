@@ -35,6 +35,7 @@
 #include <QtConcurrentRun>
 #include <atomic>
 #include <cerrno>
+#include <climits>
 #include <csignal>
 #include <cstdio>
 #include <cstring>
@@ -138,8 +139,15 @@ Deck::Deck(QObject *parent, const QString &exportProgram) : QAbstractListModel(p
     m_source = "---\ntitle: Untitled\ntheme: tokyo-night\n---\n\n# Your next idea\n";
     m_parsed = parseDeck(m_source);
     m_saved = m_source;
-    connect(&m_watcher, &QFileSystemWatcher::fileChanged, this, [this] {
+    // Writers may truncate, or remove and recreate, the file; read it once they settle.
+    m_reloadTimer.setSingleShot(true);
+    m_reloadTimer.setInterval(50);
+    connect(&m_watcher, &QFileSystemWatcher::fileChanged, &m_reloadTimer, qOverload<>(&QTimer::start));
+    connect(&m_watcher, &QFileSystemWatcher::directoryChanged, &m_reloadTimer, qOverload<>(&QTimer::start));
+    connect(&m_reloadTimer, &QTimer::timeout, this, [this] {
         QFile file(m_path);
+        if (m_path.isEmpty())
+            return;
         if (!file.open(QIODevice::ReadOnly)) {
             m_externalChange = true;
             setStatus("Presentation changed or was removed outside Hype.");
@@ -148,8 +156,7 @@ Deck::Deck(QObject *parent, const QString &exportProgram) : QAbstractListModel(p
         const QString disk = QString::fromUtf8(file.readAll());
         if (disk != m_saved) {
             if (!dirty()) {
-                loadPath(m_path);
-                setStatus("Reloaded external changes.");
+                reloadExternal(disk);
             } else {
                 m_externalChange = true;
                 setStatus("Changed on disk. Save a copy or reopen to reload.");
@@ -157,6 +164,48 @@ Deck::Deck(QObject *parent, const QString &exportProgram) : QAbstractListModel(p
         }
         watch();
     });
+}
+// Where the slide being viewed went in an externally edited presentation: the same text if
+// it survives, else the most similar slide among those that changed around it.
+static int followSlide(const QVector<Slide> &before, const QVector<Slide> &after, int selected) {
+    auto text = [](const Slide &slide) { return slide.source.trimmed(); };
+    const QString current = text(before[selected]);
+    int first = 0, last = after.size();
+    while (first < qMin(before.size(), after.size()) && text(before[first]) == text(after[first]))
+        ++first;
+    while (last > first && before.size() - (after.size() - last) > first &&
+           text(before[before.size() - 1 - (after.size() - last)]) == text(after[last - 1]))
+        --last;
+    if (selected < first)
+        return selected;
+    if (selected >= before.size() - (after.size() - last))
+        return selected + after.size() - before.size();
+    // With nothing in its place, the slide that followed it takes over.
+    int best = qMin(first, int(after.size()) - 1), bestScore = -1;
+    for (int i = first; i < last; ++i) {
+        const QString candidate = text(after[i]);
+        const int limit = qMin(current.size(), candidate.size());
+        int head = 0, tail = 0;
+        while (head < limit && current[head] == candidate[head])
+            ++head;
+        while (tail < limit - head && current[current.size() - 1 - tail] == candidate[candidate.size() - 1 - tail])
+            ++tail;
+        const int score = candidate == current ? INT_MAX : head + tail;
+        if (score > bestScore || (score == bestScore && qAbs(i - selected) < qAbs(best - selected))) {
+            best = i;
+            bestScore = score;
+        }
+    }
+    return qMax(0, best);
+}
+// Another program, often an agent, edited the file. Stay on the slide being viewed;
+// undo restores the old text.
+void Deck::reloadExternal(const QString &disk) {
+    const int selected = followSlide(m_parsed.slides, parseDeck(disk).slides, m_selected);
+    m_saved = disk;
+    m_externalChange = false;
+    apply(disk, selected);
+    setStatus("Reloaded external changes.");
 }
 int Deck::rowCount(const QModelIndex &parent) const { return parent.isValid() ? 0 : count(); }
 QVariant Deck::data(const QModelIndex &index, int role) const {
@@ -558,8 +607,14 @@ QVariantMap Deck::media() const {
 void Deck::watch() {
     if (!m_watcher.files().isEmpty())
         m_watcher.removePaths(m_watcher.files());
+    if (!m_watcher.directories().isEmpty())
+        m_watcher.removePaths(m_watcher.directories());
+    if (m_path.isEmpty())
+        return;
     if (QFile::exists(m_path))
         m_watcher.addPath(m_path);
+    // The directory reveals a file that was replaced or recreated.
+    m_watcher.addPath(QFileInfo(m_path).absolutePath());
 }
 QString Deck::dialogDirectory() const {
     QSettings settings(QSettings::IniFormat, QSettings::UserScope, "hype", "hype");
