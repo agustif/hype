@@ -131,6 +131,16 @@ class CliTests(unittest.TestCase):
         self.assertIn('open [presentation]', self.hype().stdout)
         self.assertIn('help format', self.hype('--help').stdout)
 
+    def test_skill_prints_and_installs_for_agents(self):
+        self.assertTrue(self.hype('skill').stdout.startswith('---\nname: hype\n'))
+        home = self.root / 'home'
+        (home / '.claude').mkdir(parents=True)
+        for _ in range(2):  # Installing again refreshes the copy and the link.
+            self.assertIn('Linked', self.hype('skill', 'install').stdout)
+        self.assertEqual((home / '.agents/skills/hype/SKILL.md').read_text(), self.hype('skill').stdout)
+        self.assertEqual(os.readlink(home / '.claude/skills/hype'), '../../.agents/skills/hype')
+        self.assertTrue((home / '.claude/skills/hype/SKILL.md').is_file())
+
 
 if __name__ == '__main__':
     unittest.main()
