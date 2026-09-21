@@ -342,35 +342,51 @@ static QImage loadedImage(const QString &path, QSize canvas, bool span) {
 }
 static QImage boxBlur(QImage image, int radius) {
     image = image.convertToFormat(QImage::Format_ARGB32_Premultiplied);
-    const int diameter = radius * 2 + 1;
+    const int width = image.width(), height = image.height(), diameter = radius * 2 + 1;
     // Three separable box passes approximate a Gaussian. Clamp the edges and
     // average premultiplied channels so transparent pictures keep clean edges.
-    for (int pass = 0; pass < 6; ++pass) {
-        const bool horizontal = pass % 2 == 0;
-        const int length = horizontal ? image.width() : image.height();
-        const int lines = horizontal ? image.height() : image.width();
-        QImage output(image.size(), image.format());
-        const auto *input = reinterpret_cast<const QRgb *>(image.constBits());
-        auto *pixels = reinterpret_cast<QRgb *>(output.bits());
-        const int stride = horizontal ? 1 : image.width();
-        for (int line = 0; line < lines; ++line) {
-            const int offset = horizontal ? line * image.width() : line;
-            auto pixel = [&](int position) {
-                return input[offset + qBound(0, position, length - 1) * stride];
-            };
-            int r = 0, g = 0, b = 0, a = 0;
-            auto add = [&](QRgb color, int sign) {
-                r += sign * qRed(color); g += sign * qGreen(color);
-                b += sign * qBlue(color); a += sign * qAlpha(color);
-            };
-            for (int i = -radius; i <= radius; ++i) add(pixel(i), 1);
-            for (int position = 0; position < length; ++position) {
-                pixels[offset + position * stride] = qRgba(r / diameter, g / diameter, b / diameter, a / diameter);
-                add(pixel(position - radius), -1);
-                add(pixel(position + radius + 1), 1);
+    // Sums stay exact integers; a table replaces four divisions per pixel.
+    QVector<uchar> average(255 * diameter + 1);
+    for (int sum = 0; sum < average.size(); ++sum)
+        average[sum] = uchar(sum / diameter);
+    auto pixel = [&](int sum[4]) {
+        return qRgba(average[sum[0]], average[sum[1]], average[sum[2]], average[sum[3]]);
+    };
+    auto add = [](int sum[4], QRgb color, int sign) {
+        sum[0] += sign * qRed(color); sum[1] += sign * qGreen(color);
+        sum[2] += sign * qBlue(color); sum[3] += sign * qAlpha(color);
+    };
+    QImage output(image.size(), image.format());
+    std::vector<int> columns(size_t(width) * 4);
+    for (int pass = 0; pass < 3; ++pass) {
+        for (int y = 0; y < height; ++y) {
+            const auto *in = reinterpret_cast<const QRgb *>(image.constScanLine(y));
+            auto *out = reinterpret_cast<QRgb *>(output.scanLine(y));
+            int sum[4] = {};
+            for (int i = -radius; i <= radius; ++i) add(sum, in[qBound(0, i, width - 1)], 1);
+            for (int x = 0; x < width; ++x) {
+                out[x] = pixel(sum);
+                add(sum, in[qBound(0, x - radius, width - 1)], -1);
+                add(sum, in[qBound(0, x + radius + 1, width - 1)], 1);
             }
         }
-        image = output;
+        // Vertical: keep a running sum per column and walk whole rows, so the pass
+        // reads memory in order instead of striding down each column.
+        std::fill(columns.begin(), columns.end(), 0);
+        auto row = [&](int y) {
+            return reinterpret_cast<const QRgb *>(output.constScanLine(qBound(0, y, height - 1)));
+        };
+        for (int i = -radius; i <= radius; ++i)
+            for (int x = 0, *sum = columns.data(); x < width; ++x, sum += 4) add(sum, row(i)[x], 1);
+        for (int y = 0; y < height; ++y) {
+            auto *out = reinterpret_cast<QRgb *>(image.scanLine(y));
+            const QRgb *leaving = row(y - radius), *entering = row(y + radius + 1);
+            for (int x = 0, *sum = columns.data(); x < width; ++x, sum += 4) {
+                out[x] = pixel(sum);
+                add(sum, leaving[x], -1);
+                add(sum, entering[x], 1);
+            }
+        }
     }
     return image;
 }
@@ -416,6 +432,9 @@ static QString preserveLineBreaks(QString markdown) {
 }
 static void sizeSlideText(QTextDocument &doc, const QVariantMap &palette, qreal fontSize,
                           qreal width, bool centered, bool code) {
+    // A null page size suspends layout while every format below changes; the
+    // final setTextWidth lays the document out once instead of once per run.
+    doc.setPageSize(QSizeF(0, 0));
     QFont font(code ? QString("JetBrains Mono")
                     : palette.value("font", "JetBrains Mono").toString());
     font.setPixelSize(qRound(fontSize));
@@ -486,8 +505,20 @@ static void sizeSlideText(QTextDocument &doc, const QVariantMap &palette, qreal 
 }
 void layoutSlideText(QTextDocument &doc, const QString &markdown, const QVariantMap &palette,
                      qreal fontSize, qreal width, bool centered, bool code) {
+    doc.setUndoRedoEnabled(false);
     doc.setMarkdown(preserveLineBreaks(markdown), QTextDocument::MarkdownDialectGitHub);
     sizeSlideText(doc, palette, fontSize, width, centered, code);
+}
+static QMutex fitMutex;
+static QCache<QString, qreal> fittedSizes(4096);
+static qreal fittedSize(const QString &key) {
+    QMutexLocker lock(&fitMutex);
+    const auto size = fittedSizes.object(key);
+    return size ? *size : -1;
+}
+static void rememberFit(const QString &key, qreal size) {
+    QMutexLocker lock(&fitMutex);
+    fittedSizes.insert(key, new qreal(size));
 }
 QRectF mediaRect(const Media &media) {
     return media.span ? QRectF(0, 0, 1920, 1080)
@@ -623,19 +654,30 @@ void paintSlide(QPainter *p, const QRectF &target, const QString &source, const 
         if (media.video && !media.span)
             high = 48;
         QTextDocument doc;
-        layoutSlideText(doc, text, palette, high, area.width(), centered, code);
-        bool fits = doc.size().height() <= area.height() && doc.idealWidth() <= area.width() + 1;
-        if (fits)
-            low = high;
-        for (int iteration = 0; !fits && iteration < 9; ++iteration) {
-            qreal size = (low + high) / 2;
-            sizeSlideText(doc, palette, size, area.width(), centered, code);
-            if (doc.size().height() <= area.height() && doc.idealWidth() <= area.width() + 1)
-                low = size;
-            else
-                high = size;
+        // Layout happens in 1080p slide units, so every render size, the PDF and
+        // a theme change all reuse one search. Colors never affect the fit.
+        const QString fit = QString("%1 %2 %3 %4 %5 ").arg(high).arg(area.width()).arg(area.height())
+                                .arg(centered).arg(code) + palette.value("font").toString() + '\n' + text;
+        if (const qreal fitted = fittedSize(fit); fitted > 0) {
+            low = fitted;
+            layoutSlideText(doc, text, palette, low, area.width(), centered, code);
+        } else {
+            layoutSlideText(doc, text, palette, high, area.width(), centered, code);
+            const bool fits = doc.size().height() <= area.height() && doc.idealWidth() <= area.width() + 1;
+            if (fits)
+                low = high;
+            for (int iteration = 0; !fits && iteration < 9; ++iteration) {
+                qreal size = (low + high) / 2;
+                sizeSlideText(doc, palette, size, area.width(), centered, code);
+                if (doc.size().height() <= area.height() && doc.idealWidth() <= area.width() + 1)
+                    low = size;
+                else
+                    high = size;
+            }
+            if (!fits)
+                sizeSlideText(doc, palette, low, area.width(), centered, code);
+            rememberFit(fit, low);
         }
-        sizeSlideText(doc, palette, low, area.width(), centered, code);
         highlightCode(doc, palette);
         if (low < 24 && warning)
             *warning = "Text fits below 24px on a 1080p slide";

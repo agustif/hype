@@ -4,7 +4,7 @@
 #include "images.h"
 #include "pptx.h"
 #include "renderer.h"
-#include <QApplication>
+#include <QGuiApplication>
 #include <QCache>
 #include <QClipboard>
 #include <QCryptographicHash>
@@ -878,7 +878,7 @@ bool Deck::importMedia(const QUrl &url, bool newSlide) {
 bool Deck::pasteMedia() {
     if (m_compressingImage)
         return true;
-    const QMimeData *clipboard = QApplication::clipboard()->mimeData();
+    const QMimeData *clipboard = QGuiApplication::clipboard()->mimeData();
     if (!clipboard)
         return false;
     QString source, extension, suggested = "image";
@@ -917,7 +917,7 @@ bool Deck::pasteMedia() {
             break;
         }
         if (!video) {
-            image = QApplication::clipboard()->image();
+            image = QGuiApplication::clipboard()->image();
             if (image.isNull())
                 return false;
             extension = "png";
