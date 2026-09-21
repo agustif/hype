@@ -169,6 +169,8 @@ hype themes
 
 `hype` alone lists the commands, and `hype open` starts the editor. `hype help format` prints the whole slide format, from front matter to media options, in a form an agent can read once and work from. `hype help <command>` lists a command's options.
 
+To teach your coding agents about Hype, run `hype skill install`. It copies a short skill to `~/.agents/skills/hype/`, where Codex finds it, and links it into `~/.claude/skills/` for Claude Code. The skill points the agent at `hype help format`, so it stays current as Hype is upgraded. `hype skill` prints it instead.
+
 If the presentation is open in the editor, changes written to the file appear there right away, and the editor stays on the slide you were viewing, even when slides are added or removed before it. **Ctrl+Z** undoes such a change. The editor never replaces unsaved changes of its own.
 
 ## Keyboard shortcuts

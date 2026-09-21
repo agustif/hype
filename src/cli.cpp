@@ -353,6 +353,41 @@ int themes(const QStringList &arguments) {
     return 0;
 }
 
+// As the hey and basecamp tools do: one shared copy, linked into Claude Code, found directly by Codex.
+int skill(const QStringList &arguments) {
+    Command command("skill", "Print the agent skill, or install it for your coding agents with: skill install.", false);
+    command.parser.addPositionalArgument("install", "Copy to ~/.agents/skills/hype and link into ~/.claude/skills", "[install]");
+    command.parser.process(arguments);
+    QFile bundled(":/skill.md");
+    if (!bundled.open(QIODevice::ReadOnly))
+        return 1;
+    const QByteArray text = bundled.readAll();
+    if (command.argument(1).isEmpty()) {
+        fputs(text.constData(), stdout);
+        return 0;
+    }
+    if (command.argument(1) != "install")
+        return fail("Use hype skill to print the skill, or hype skill install.");
+    const QDir home = QDir::home();
+    const QString directory = home.filePath(".agents/skills/hype");
+    QSaveFile file(directory + "/SKILL.md");
+    if (!QDir().mkpath(directory) || !file.open(QIODevice::WriteOnly) || file.write(text) < 0 || !file.commit())
+        return fail("Could not write " + file.fileName());
+    print(stdout, "Installed " + file.fileName());
+    if (!home.exists(".claude"))
+        return 0;
+    const QString link = home.filePath(".claude/skills/hype");
+    const QFileInfo existing(link);
+    if (existing.isSymLink())
+        QFile::remove(link);
+    else if (existing.exists())
+        return fail(link + " exists and is not a link; leaving it alone.");
+    if (!home.mkpath(".claude/skills") || !QFile::link("../../.agents/skills/hype", link))
+        return fail("Could not link " + link);
+    print(stdout, "Linked " + link);
+    return 0;
+}
+
 int help(const QStringList &arguments) {
     const QString topic = arguments.value(2);
     if (topic == "format") {
@@ -379,10 +414,11 @@ QString cliSummary() {
            "  render <presentation>           Render one slide or all of them to PNG\n"
            "  export <presentation> <output>  Export PDF or PowerPoint\n"
            "  themes                          List installed themes\n"
-           "  help format                     How to write a presentation";
+           "  help format                     How to write a presentation\n"
+           "  skill [install]                 Print the skill for coding agents, or install it";
 }
 bool isCliCommand(const QString &word) {
-    return QStringList{"new", "check", "slides", "render", "export", "themes", "help"}.contains(word);
+    return QStringList{"new", "check", "slides", "render", "export", "themes", "skill", "help"}.contains(word);
 }
 int runCli(const QStringList &arguments) {
     const QString command = arguments.value(1);
@@ -392,5 +428,6 @@ int runCli(const QStringList &arguments) {
            : command == "render" ? render(arguments)
            : command == "export" ? exportDeck(arguments)
            : command == "themes" ? themes(arguments)
+           : command == "skill"  ? skill(arguments)
                                  : help(arguments);
 }
