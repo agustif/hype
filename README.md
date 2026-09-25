@@ -33,7 +33,7 @@ brew install qt ffmpeg source-highlight webp
 ```sh
 ./bin/build-macos
 ditto build/hype.app /Applications/hype.app
-ln -sf /Applications/hype.app/Contents/MacOS/hype "$(brew --prefix)/bin/hype"  # optional CLI
+ln -sf /Applications/hype.app/Contents/MacOS/hype "$(brew --prefix)/bin/hype"  # optional: hype on PATH
 ```
 
 `bin/build-macos` also writes an ad-hoc signed `build/hype-macos-arm64.zip`. Opening Hype from Finder, the Dock or `open` starts the editor on the last presentation; `hype` without arguments in a terminal prints help, as on Linux.

@@ -39,6 +39,9 @@ jobs:
       run: |
         HYPE=build/hype.app/Contents/MacOS/hype
         "$HYPE" --version
+        # Through a symlink, as with a hype command on PATH.
+        ln -sf "$PWD/$HYPE" "$RUNNER_TEMP/hype"
+        "$RUNNER_TEMP/hype" --version
         # A terminal launch without arguments still prints help.
         "$HYPE" </dev/null | grep -q '^Usage: hype'
         "$HYPE" check examples/welcome.md

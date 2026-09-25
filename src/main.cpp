@@ -23,7 +23,10 @@
 #ifdef Q_OS_MACOS
 #include <QApplication>
 #include <CoreFoundation/CoreFoundation.h>
+#include <climits>
+#include <cstdlib>
 #include <cstring>
+#include <mach-o/dyld.h>
 #include <unistd.h>
 #endif
 // The desktop's interface font, e.g. "Adwaita Sans 11", which the gtk3 platform
@@ -66,6 +69,14 @@ static bool launchedFromFinder(int &argc, char **argv) {
            CFStringGetCString(bundle, identifier, sizeof identifier, kCFStringEncodingUTF8) &&
            launchedAs == identifier;
 }
+// Started through a symlink such as $(brew --prefix)/bin/hype, Qt would not find the
+// bundle's qt.conf, plugins and QML modules. Run again from the real path.
+static void runFromRealPath(char **argv) {
+    char path[PATH_MAX], real[PATH_MAX];
+    uint32_t size = sizeof path;
+    if (_NSGetExecutablePath(path, &size) == 0 && realpath(path, real) && std::strcmp(path, real) != 0)
+        execv(real, argv);
+}
 // Apps started by launchd get PATH=/usr/bin:/bin:/usr/sbin:/sbin; ffmpeg, ffprobe and
 // source-highlight come from Homebrew.
 static void addHomebrewToPath() {
@@ -86,6 +97,7 @@ int main(int argc, char **argv) {
     // even where the desktop exports QT_QPA_PLATFORM=wayland.
     // Bare hype prints help, as a command line tool should; launchers say hype open.
 #ifdef Q_OS_MACOS
+    runFromRealPath(argv);
     addHomebrewToPath();
     const bool finderLaunch = launchedFromFinder(argc, argv);
 #else
