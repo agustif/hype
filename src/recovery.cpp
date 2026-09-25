@@ -28,8 +28,13 @@ QString Deck::recoveryFolder() const {
 }
 void Deck::enableAutosave(const QString &directory) {
     if (!m_recoveryDirectory.isEmpty()) return;
+#if QT_VERSION >= QT_VERSION_CHECK(6, 9, 0)
     m_recoveryDirectory = directory.isEmpty()
         ? QStandardPaths::writableLocation(QStandardPaths::StateLocation) + "/recovery" : directory;
+#else
+    m_recoveryDirectory = directory.isEmpty()
+        ? QStandardPaths::writableLocation(QStandardPaths::AppLocalDataLocation) + "/recovery" : directory;
+#endif
     m_autosaveTimer.setSingleShot(true);
     m_autosaveTimer.setInterval(1000);
     m_autosaveDeadline.setSingleShot(true);
@@ -177,10 +182,13 @@ QVariantList Deck::recoveryVersions() const {
     if (m_recoveryDirectory.isEmpty()) return result;
     const QDir versions(recoveryFolder() + "/versions");
     for (const auto &name : versions.entryList({"*.json"}, QDir::Files, QDir::Name | QDir::Reversed)) {
-        // Metadata comes from the filename, so opening History doesn't read every document.
         const auto time = QDateTime::fromString(name.left(19), "yyyyMMdd-HHmmss-zzz");
         auto utc = time;
+#if QT_VERSION >= QT_VERSION_CHECK(6, 9, 0)
         utc.setTimeZone(QTimeZone::UTC);
+#else
+        utc.setTimeZone(QTimeZone::utc());
+#endif
         result.append(QVariantMap{{"name", name}, {"label", utc.toLocalTime().toString("yyyy-MM-dd HH:mm:ss.zzz")}});
     }
     return result;

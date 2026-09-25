@@ -4,9 +4,11 @@
 #include "renderer.h"
 #include <QGuiApplication>
 #include <QCommandLineParser>
+#ifdef Q_OS_LINUX
 #include <QDBusConnection>
 #include <QDBusMessage>
 #include <QDBusVariant>
+#endif
 #include <QFont>
 #include <QJsonDocument>
 #include <QJsonObject>
@@ -18,9 +20,19 @@
 #include <QScopeGuard>
 #include <QTimer>
 #include <cstdio>
+#ifdef Q_OS_MACOS
+#include <QApplication>
+#include <CoreFoundation/CoreFoundation.h>
+#include <climits>
+#include <cstdlib>
+#include <cstring>
+#include <mach-o/dyld.h>
+#include <unistd.h>
+#endif
 // The desktop's interface font, e.g. "Adwaita Sans 11", which the gtk3 platform
 // theme used to supply. Without a settings portal Qt's default font stays.
 static void adoptDesktopFont() {
+#ifdef Q_OS_LINUX
     auto call = QDBusMessage::createMethodCall("org.freedesktop.portal.Desktop", "/org/freedesktop/portal/desktop",
                                                "org.freedesktop.portal.Settings", "ReadOne");
     call.setArguments({"org.gnome.desktop.interface", "font-name"});
@@ -33,15 +45,65 @@ static void adoptDesktopFont() {
     QFont font(name.left(space));
     font.setPointSizeF(size);
     QGuiApplication::setFont(font);
+#endif
 }
+#ifdef Q_OS_MACOS
+// Finder, the Dock and `open` start the bundle through launchd: no arguments (or a
+// legacy -psn_ process serial number), launchd as parent and LaunchServices' bundle id
+// in the environment. Such a launch opens the editor; a terminal `hype` still prints help.
+static bool launchedFromFinder(int &argc, char **argv) {
+    bool serial = false;
+    int kept = 1;
+    for (int i = 1; i < argc; ++i) {
+        if (std::strncmp(argv[i], "-psn_", 5) == 0) serial = true;
+        else argv[kept++] = argv[i];
+    }
+    argc = kept;
+    argv[argc] = nullptr;
+    if (argc != 1) return false;
+    if (serial || getppid() == 1) return true;
+    const QByteArray launchedAs = qgetenv("__CFBundleIdentifier");
+    const CFStringRef bundle = CFBundleGetIdentifier(CFBundleGetMainBundle());
+    char identifier[256] = {};
+    return !launchedAs.isEmpty() && bundle &&
+           CFStringGetCString(bundle, identifier, sizeof identifier, kCFStringEncodingUTF8) &&
+           launchedAs == identifier;
+}
+// Started through a symlink such as $(brew --prefix)/bin/hype, Qt would not find the
+// bundle's qt.conf, plugins and QML modules. Run again from the real path.
+static void runFromRealPath(char **argv) {
+    char path[PATH_MAX], real[PATH_MAX];
+    uint32_t size = sizeof path;
+    if (_NSGetExecutablePath(path, &size) == 0 && realpath(path, real) && std::strcmp(path, real) != 0)
+        execv(real, argv);
+}
+// Apps started by launchd get PATH=/usr/bin:/bin:/usr/sbin:/sbin; ffmpeg, ffprobe and
+// source-highlight come from Homebrew.
+static void addHomebrewToPath() {
+    QByteArray path = qgetenv("PATH");
+    for (const char *directory : {"/usr/local/bin", "/opt/homebrew/bin"})
+        if (!(":" + path + ":").contains(QByteArray(":") + directory + ":"))
+            path = QByteArray(directory) + (path.isEmpty() ? "" : ":") + path;
+    qputenv("PATH", path);
+}
+#endif
 int main(int argc, char **argv) {
     // Hype themes itself. Qt's gtk3 platform theme only adds a use-after-free
     // inside GTK when the desktop theme changes under a running editor.
+#ifdef Q_OS_LINUX
     qputenv("QT_QPA_PLATFORMTHEME", "generic");
+#endif
     // Commands, exports and help draw no window, so they must not need a display,
     // even where the desktop exports QT_QPA_PLATFORM=wayland.
     // Bare hype prints help, as a command line tool should; launchers say hype open.
-    const bool command = argc == 1 || isCliCommand(argv[1]);
+#ifdef Q_OS_MACOS
+    runFromRealPath(argv);
+    addHomebrewToPath();
+    const bool finderLaunch = launchedFromFinder(argc, argv);
+#else
+    const bool finderLaunch = false;
+#endif
+    const bool command = argc == 1 ? !finderLaunch : isCliCommand(argv[1]);
     bool windowless = command;
     for (int i = 1; i < argc; ++i) {
         const QByteArray argument(argv[i]);
@@ -51,7 +113,12 @@ int main(int argc, char **argv) {
     }
     if (windowless)
         qputenv("QT_QPA_PLATFORM", "offscreen");
+#ifdef Q_OS_MACOS
+    // The native file dialogs are QFileDialog, which needs QApplication.
+    QApplication app(argc, argv);
+#else
     QGuiApplication app(argc, argv);
+#endif
     app.setApplicationName("hype");
     app.setApplicationVersion("0.4.1");
     app.setDesktopFileName(qEnvironmentVariable("HYPE_DESKTOP_FILE", "hype"));

@@ -1,0 +1,79 @@
+#!/bin/bash
+# Build a self-contained, ad-hoc signed build/hype.app and build/hype-macos-<arch>.zip.
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+cd "$ROOT"
+
+if command -v brew >/dev/null 2>&1 && [ -d "$(brew --prefix)/opt/qt/bin" ]; then
+    export PATH="$(brew --prefix)/opt/qt/bin:$PATH"
+fi
+if ! command -v qmake6 >/dev/null 2>&1; then
+    echo "Error: qmake6 not found. Install Qt 6 with Homebrew: brew install qt" >&2
+    exit 1
+fi
+MACDEPLOYQT="$(command -v macdeployqt6 || command -v macdeployqt || true)"
+if [ -z "$MACDEPLOYQT" ]; then
+    echo "Error: macdeployqt not found (it ships with Homebrew's qt)." >&2
+    exit 1
+fi
+
+mkdir -p build/app
+cd build/app
+qmake6 "$ROOT/hype.pro" CONFIG+=release
+make -j"$(sysctl -n hw.ncpu)"
+
+# Deploy into a fresh copy so repeated builds never deploy on top of a deployed bundle.
+cd "$ROOT/build"
+APP="$ROOT/build/hype.app"
+rm -rf "$APP"
+cp -R app/hype.app "$APP"
+
+# macdeployqt only ships the cocoa platform plugin. Commands, exports and --help run
+# on the offscreen platform, so bundle it too and let macdeployqt relink it.
+PLATFORMS="$APP/Contents/PlugIns/platforms"
+mkdir -p "$PLATFORMS"
+cp "$(qmake6 -query QT_INSTALL_PLUGINS)/platforms/libqoffscreen.dylib" "$PLATFORMS/"
+"$MACDEPLOYQT" "$APP" -qmldir="$ROOT/src" -executable="$PLATFORMS/libqoffscreen.dylib"
+
+for plugin in libqcocoa.dylib libqoffscreen.dylib; do
+    if [ ! -f "$PLATFORMS/$plugin" ]; then
+        echo "Error: $plugin missing from the bundle" >&2
+        exit 1
+    fi
+done
+if otool -L "$APP/Contents/MacOS/hype" "$PLATFORMS"/*.dylib | grep -E '^\s+/(opt/homebrew|usr/local)/'; then
+    echo "Error: the bundle still links Homebrew libraries" >&2
+    exit 1
+fi
+
+# Homebrew's QtGui was compiled against md4c 0.5, but Homebrew now ships md4c 0.6,
+# which inserted MD_SPAN_INS before MD_SPAN_DEL and renumbered the later span types.
+# With it Qt silently drops ~~strikethrough~~ and _underline_. Ship the md4c ABI that
+# QtGui was built for. bin/build-macos leaves it in build/md4c for the tests as well.
+if otool -L "$APP/Contents/Frameworks/QtGui.framework/Versions/A/QtGui" | grep -q 'libmd4c\.0\.dylib.*current version 0\.5\.'; then
+    MD4C_VERSION=0.5.3
+    MD4C_SHA256=353c346f376b87c954a13f3415ede2d51264cc61dc5abcd38ff1d2aa0d059b9e
+    MD4C="$ROOT/build/md4c"
+    if [ ! -f "$MD4C/libmd4c.0.dylib" ]; then
+        mkdir -p "$MD4C"
+        curl -fsSL -o "$MD4C/md4c.tar.gz" "https://github.com/mity/md4c/archive/refs/tags/release-$MD4C_VERSION.tar.gz"
+        echo "$MD4C_SHA256  $MD4C/md4c.tar.gz" | shasum -a 256 -c -
+        tar -xzf "$MD4C/md4c.tar.gz" -C "$MD4C" --strip-components=1 "md4c-release-$MD4C_VERSION/src"
+        xcrun --sdk macosx clang -O2 -dynamiclib -arch "$(uname -m)" -mmacosx-version-min=11.0 \
+            -install_name @rpath/libmd4c.0.dylib -compatibility_version 0 -current_version "$MD4C_VERSION" \
+            "$MD4C/src/md4c.c" -o "$MD4C/libmd4c.0.dylib"
+    fi
+    cp "$MD4C/libmd4c.0.dylib" "$APP/Contents/Frameworks/libmd4c.0.dylib"
+fi
+
+codesign --force --deep --sign - "$APP"
+codesign --verify --deep --strict "$APP"
+
+ZIP="$ROOT/build/hype-macos-$(uname -m).zip"
+rm -f "$ZIP"
+# ditto keeps the frameworks' symlinks, which the signature covers.
+ditto -c -k --keepParent "$APP" "$ZIP"
+
+echo "Built $APP"
+echo "Packaged $ZIP"

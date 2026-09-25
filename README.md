@@ -6,6 +6,8 @@ Hype is a native app for Omarchy. Your presentation is a Markdown file with its 
 
 ## Install
 
+### Linux (Omarchy)
+
 Install Hype from the [Omarchy Package Repository (OPR)](https://github.com/omacom/omarchy-pkgs):
 
 ```sh
@@ -13,6 +15,36 @@ omarchy pkg add hype
 ```
 
 Then open **Hype** from the app launcher, or run `hype` in a terminal.
+
+### macOS
+
+Hype can be built from source on macOS with Qt 6 and Homebrew.
+
+#### Prerequisites
+
+Install dependencies via Homebrew:
+
+```sh
+brew install qt ffmpeg source-highlight webp
+```
+
+#### Build and Install
+
+```sh
+./bin/build-macos
+ditto build/hype.app /Applications/hype.app
+ln -sf /Applications/hype.app/Contents/MacOS/hype "$(brew --prefix)/bin/hype"  # optional: hype on PATH
+```
+
+`bin/build-macos` also writes an ad-hoc signed `build/hype-macos-arm64.zip`. Opening Hype from Finder, the Dock or `open` starts the editor on the last presentation; `hype` without arguments in a terminal prints help, as on Linux.
+
+Or open directly from the build directory:
+
+```sh
+open build/hype.app
+```
+
+Hype on macOS uses native file dialogs and degrades gracefully when Omarchy theme files are not present (falling back to a clean light theme). The app finds `ffmpeg`, `ffprobe` and `source-highlight` in Homebrew's standard locations even when launched from Finder.
 
 ## Make a presentation
 
@@ -208,6 +240,8 @@ The mouse wheel over the sidebar selects the previous or next slide. Home/End ju
 
 ## Run from source
 
+### Linux
+
 To build Hype yourself, install a C++17 compiler, make, Qt 6.9 or newer, FFmpeg, and GNU source-highlight; see [the package definition](pkgbuild/PKGBUILD) for dependencies. Then:
 
 ```sh
@@ -216,3 +250,20 @@ To build Hype yourself, install a C++17 compiler, make, Qt 6.9 or newer, FFmpeg,
 ```
 
 For a launcher entry that rebuilds this checkout when opened, run `./bin/install-dev` and choose **Hype (Development)**.
+
+### macOS
+
+On macOS with Homebrew:
+
+```sh
+brew install qt ffmpeg source-highlight webp
+./bin/build-macos
+open build/hype.app
+```
+
+The `build-macos` script creates a self-contained app bundle with Qt frameworks included. Command-line usage works the same as on Linux:
+
+```sh
+./build/hype.app/Contents/MacOS/hype --help
+./build/hype.app/Contents/MacOS/hype check examples/welcome.md
+```

@@ -1,0 +1,110 @@
+name: macOS Build and Test
+
+on:
+  push:
+    branches: [ master, cursor/macos-support-cac9 ]
+  pull_request:
+    branches: [ master ]
+
+jobs:
+  macos-build:
+    runs-on: macos-14
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Install dependencies
+      env:
+        HOMEBREW_NO_AUTO_UPDATE: 1
+        HOMEBREW_NO_INSTALLED_DEPENDENTS_CHECK: 1
+      run: |
+        # Install only what is missing (runner images and local act runs may have some).
+        for formula in qt ffmpeg source-highlight webp; do
+          brew list --formula "$formula" >/dev/null 2>&1 || brew install "$formula"
+        done
+        echo "$(brew --prefix)/opt/qt/bin" >> "$GITHUB_PATH"
+
+    - name: Build, bundle and sign hype.app
+      run: ./bin/build-macos
+
+    - name: Verify app bundle
+      run: |
+        APP=build/hype.app
+        file "$APP/Contents/MacOS/hype" | grep arm64
+        ls "$APP/Contents/PlugIns/platforms"
+        codesign --verify --deep --strict --verbose=2 "$APP"
+        codesign -dv "$APP" 2>&1 | grep 'Signature=adhoc'
+
+    - name: Smoke test the bundled binary
+      run: |
+        HYPE=build/hype.app/Contents/MacOS/hype
+        "$HYPE" --version
+        # Through a symlink, as with a hype command on PATH.
+        ln -sf "$PWD/$HYPE" "$RUNNER_TEMP/hype"
+        "$RUNNER_TEMP/hype" --version
+        # A terminal launch without arguments still prints help.
+        "$HYPE" </dev/null | grep -q '^Usage: hype'
+        "$HYPE" check examples/welcome.md
+        "$HYPE" examples/welcome.md --pdf "$RUNNER_TEMP/welcome.pdf"
+        test -s "$RUNNER_TEMP/welcome.pdf"
+        head -c 5 "$RUNNER_TEMP/welcome.pdf" | grep -q '%PDF-'
+
+    - name: Smoke test a Finder-style launch
+      run: |
+        APP="$PWD/build/hype.app"
+        # Like Finder and the Dock: through LaunchServices, without arguments.
+        open -n "$APP"
+        sleep 10
+        PID=$(pgrep -f "$APP/Contents/MacOS/hype" | head -1)
+        if [ -z "$PID" ]; then
+          echo "hype.app exited right after launch" >&2
+          log show --last 2m --predicate 'process == "hype"' --style compact | tail -50 || true
+          ls ~/Library/Logs/DiagnosticReports | grep -i hype || true
+          exit 1
+        fi
+        echo "hype.app is running as $PID"
+        kill "$PID"
+
+    - name: Upload macOS app bundle
+      uses: actions/upload-artifact@v4
+      with:
+        name: hype-macos-arm64
+        path: build/hype-macos-arm64.zip
+        if-no-files-found: error
+        retention-days: 30
+
+    - name: Build and run tests
+      run: |
+        mkdir -p build/tests
+        cd build/tests
+        qmake6 ../../tests/tests.pro
+        make -j"$(sysctl -n hw.ncpu)"
+        # Test against the md4c that bin/build-macos ships inside hype.app, if it built one.
+        if [ -d ../md4c ]; then export DYLD_LIBRARY_PATH="$(cd ../md4c && pwd)"; fi
+        QT_QPA_PLATFORM=offscreen QT_STYLE_OVERRIDE=Fusion ./hype-tests.app/Contents/MacOS/hype-tests
+
+  linux-build:
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Install dependencies
+      run: |
+        sudo apt-get update
+        # qt6-image-formats-plugins provides the WebP writer used for pasted images.
+        sudo apt-get install -y \
+          qt6-base-dev qt6-declarative-dev qt6-multimedia-dev qt6-pdf-dev \
+          qt6-image-formats-plugins libgl1-mesa-dev \
+          ffmpeg source-highlight libwebp-dev
+
+    - name: Build hype
+      run: ./bin/build
+
+    - name: Test CLI commands
+      run: |
+        ./build/hype --help
+        ./build/hype --version
+
+    - name: Build and run tests
+      run: ./bin/test
