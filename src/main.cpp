@@ -4,9 +4,11 @@
 #include "renderer.h"
 #include <QGuiApplication>
 #include <QCommandLineParser>
+#ifdef Q_OS_LINUX
 #include <QDBusConnection>
 #include <QDBusMessage>
 #include <QDBusVariant>
+#endif
 #include <QFont>
 #include <QJsonDocument>
 #include <QJsonObject>
@@ -18,9 +20,9 @@
 #include <QScopeGuard>
 #include <QTimer>
 #include <cstdio>
-// The desktop's interface font, e.g. "Adwaita Sans 11", which the gtk3 platform
-// theme used to supply. Without a settings portal Qt's default font stays.
+
 static void adoptDesktopFont() {
+#ifdef Q_OS_LINUX
     auto call = QDBusMessage::createMethodCall("org.freedesktop.portal.Desktop", "/org/freedesktop/portal/desktop",
                                                "org.freedesktop.portal.Settings", "ReadOne");
     call.setArguments({"org.gnome.desktop.interface", "font-name"});
@@ -33,14 +35,13 @@ static void adoptDesktopFont() {
     QFont font(name.left(space));
     font.setPointSizeF(size);
     QGuiApplication::setFont(font);
+#endif
 }
+
 int main(int argc, char **argv) {
-    // Hype themes itself. Qt's gtk3 platform theme only adds a use-after-free
-    // inside GTK when the desktop theme changes under a running editor.
+#ifdef Q_OS_LINUX
     qputenv("QT_QPA_PLATFORMTHEME", "generic");
-    // Commands, exports and help draw no window, so they must not need a display,
-    // even where the desktop exports QT_QPA_PLATFORM=wayland.
-    // Bare hype prints help, as a command line tool should; launchers say hype open.
+#endif
     const bool command = argc == 1 || isCliCommand(argv[1]);
     bool windowless = command;
     for (int i = 1; i < argc; ++i) {
@@ -146,11 +147,8 @@ int main(int argc, char **argv) {
     auto drainRenders = [thumbnails] {
         if (thumbnails)
             thumbnails->shutdown();
-        // Clipboard image compression can also decode SVG through Qt GUI.
         QThreadPool::globalInstance()->waitForDone();
     };
-    // The engine is not the final owner of an async image provider. Drain while
-    // QGuiApplication's fonts, platform integration and GPU resources still exist.
     QObject::connect(&app, &QCoreApplication::aboutToQuit, &app, drainRenders);
     const auto renderShutdown = qScopeGuard(drainRenders);
     engine.load(QUrl("qrc:/Main.qml"));

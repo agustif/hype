@@ -16,6 +16,24 @@
 #include <functional>
 #include <zlib.h>
 
+#ifdef Q_OS_MACOS
+static QString findExecutable(const QString &name) {
+    QProcess which;
+    which.start("which", {name});
+    if (which.waitForFinished(1000) && which.exitCode() == 0) {
+        return QString::fromUtf8(which.readAllStandardOutput().trimmed());
+    }
+    const QString homebrew = qEnvironmentVariable("HOMEBREW_PREFIX", "/opt/homebrew");
+    const QString homebrewPath = homebrew + "/bin/" + name;
+    if (QFile::exists(homebrewPath))
+        return homebrewPath;
+    const QString localPath = "/usr/local/bin/" + name;
+    if (QFile::exists(localPath))
+        return localPath;
+    return name;
+}
+#endif
+
 namespace {
 const QString pns = "http://schemas.openxmlformats.org/presentationml/2006/main";
 const QString ans = "http://schemas.openxmlformats.org/drawingml/2006/main";
@@ -414,8 +432,15 @@ bool readSlide(const QJsonObject &entry, const QDir &base, PowerPointSlide &slid
 
 QString preparePowerPointVideo(const QString &source, const QString &output, QString *error,
                               const std::function<void(double)> &progress) {
+#ifdef Q_OS_MACOS
+    static const QString ffprobePath = findExecutable("ffprobe");
+    static const QString ffmpegPath = findExecutable("ffmpeg");
+#else
+    static const QString ffprobePath = "ffprobe";
+    static const QString ffmpegPath = "ffmpeg";
+#endif
     QProcess probe;
-    probe.start("ffprobe", {"-v", "error", "-show_streams", "-show_format", "-of", "json", source});
+    probe.start(ffprobePath, {"-v", "error", "-show_streams", "-show_format", "-of", "json", source});
     if (!probe.waitForFinished(30000) || probe.exitCode() != 0) {
         probe.kill();
         probe.waitForFinished();
@@ -438,7 +463,7 @@ QString preparePowerPointVideo(const QString &source, const QString &output, QSt
         return source;
     const double duration = info["format"].toObject()["duration"].toString().toDouble();
     QProcess encoder;
-    encoder.start("ffmpeg", {"-v", "error", "-nostdin", "-y", "-i", source,
+    encoder.start(ffmpegPath, {"-v", "error", "-nostdin", "-y", "-i", source,
         "-map", "0:v:0", "-map", "0:a:0?", "-c:v", "libx264", "-preset", "fast", "-crf", "18",
         "-threads", "2", "-vf", "pad=ceil(iw/2)*2:ceil(ih/2)*2", "-pix_fmt", "yuv420p",
         "-c:a", "aac", "-b:a", "192k", "-movflags", "+faststart", "-progress", "pipe:1", output});

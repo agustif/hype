@@ -1,4 +1,5 @@
-QT += core gui qml quick quickcontrols2 multimedia widgets testlib pdf concurrent dbus
+QT += core gui qml quick quickcontrols2 multimedia widgets testlib pdf concurrent
+linux: QT += dbus
 CONFIG += c++17 testcase
 TEMPLATE = app
 TARGET = hype-tests
@@ -11,7 +12,23 @@ SOURCES += ../src/syntax.cpp
 HEADERS += ../src/syntax.h
 SOURCES += ../src/pptx.cpp
 HEADERS += ../src/pptx.h
-LIBS += -lz -lwebpdemux -lwebp
+
+linux {
+    LIBS += -lz -lwebpdemux -lwebp
+}
+
+macx {
+    HOMEBREW_PREFIX = $$system(brew --prefix)
+    isEmpty(HOMEBREW_PREFIX) {
+        exists(/opt/homebrew/bin/brew) {
+            HOMEBREW_PREFIX = /opt/homebrew
+        } else:exists(/usr/local/bin/brew) {
+            HOMEBREW_PREFIX = /usr/local
+        }
+    }
+    INCLUDEPATH += $$HOMEBREW_PREFIX/include
+    LIBS += -L$$HOMEBREW_PREFIX/lib -lz -lwebpdemux -lwebp
+}
 
 SOURCES += ../src/animationexport.cpp
 HEADERS += ../src/animationexport.h

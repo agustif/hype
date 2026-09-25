@@ -1,5 +1,11 @@
 #include "filedialog.h"
 #include <QCoreApplication>
+#include <QDir>
+#include <QFileInfo>
+#include <QScopeGuard>
+#include <QUrl>
+
+#ifdef Q_OS_LINUX
 #include <QDBusArgument>
 #include <QDBusConnection>
 #include <QDBusMessage>
@@ -7,10 +13,6 @@
 #include <QDBusObjectPath>
 #include <QDBusPendingCallWatcher>
 #include <QDBusPendingReply>
-#include <QDir>
-#include <QFileInfo>
-#include <QScopeGuard>
-#include <QUrl>
 #include <QUuid>
 
 namespace {
@@ -33,9 +35,15 @@ const QDBusArgument &operator>>(const QDBusArgument &arg, Filter &filter) {
     arg.beginStructure(); arg >> filter.label >> filter.rules; arg.endStructure(); return arg;
 }
 }
+#endif
+
+#ifdef Q_OS_MACOS
+#include <QFileDialog>
+#endif
 
 QString FileDialog::choose(bool save, const QString &location, const QString &label,
                            const QStringList &patterns, QString *error) {
+#ifdef Q_OS_LINUX
     qDBusRegisterMetaType<FilterRule>();
     qDBusRegisterMetaType<FilterRules>();
     qDBusRegisterMetaType<Filter>();
@@ -54,7 +62,6 @@ QString FileDialog::choose(bool save, const QString &location, const QString &la
                         {"filters", QVariant::fromValue(Filters{filter})},
                         {"current_filter", QVariant::fromValue(filter)}};
     if (save) options.insert("current_name", QFileInfo(location).fileName());
-    // Subscribe before sending: a fast response may arrive before the method reply.
     if (!bus.isConnected() || !dialog.listen("/org/freedesktop/portal/desktop/request/" + sender + "/" + token)) {
         *error = "Could not connect to the desktop file chooser.";
         return {};
@@ -85,14 +92,33 @@ QString FileDialog::choose(bool save, const QString &location, const QString &la
         }
     });
     connect(QCoreApplication::instance(), &QCoreApplication::aboutToQuit, &dialog.m_loop, &QEventLoop::quit);
-    // The chooser lives in another process. Preserve modal behavior in our own
-    // windows, so the selected slide/document cannot change during an import.
     QCoreApplication::instance()->installEventFilter(&dialog);
     if (!dialog.m_done) dialog.m_loop.exec();
     *error = dialog.m_error;
     return dialog.m_file;
+#else
+    QString filter = label;
+    if (!patterns.isEmpty()) {
+        filter += " (";
+        filter += patterns.join(' ');
+        filter += ")";
+    }
+    QString result;
+    if (save) {
+        result = QFileDialog::getSaveFileName(nullptr, "Save File", location, filter);
+    } else {
+        QFileInfo info(location);
+        QString startDir = info.isDir() ? location : info.absolutePath();
+        result = QFileDialog::getOpenFileName(nullptr, "Open File", startDir, filter);
+    }
+    if (result.isEmpty() && error) {
+        *error = QString();
+    }
+    return result;
+#endif
 }
 
+#ifdef Q_OS_LINUX
 bool FileDialog::listen(const QString &path) {
     m_request = path;
     return QDBusConnection::sessionBus().connect(service, path, requestInterface, "Response",
@@ -127,3 +153,4 @@ bool FileDialog::eventFilter(QObject *, QEvent *event) {
         return false;
     }
 }
+#endif

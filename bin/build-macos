@@ -1,0 +1,63 @@
+#!/bin/bash
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+cd "$ROOT"
+
+echo "Building Hype for macOS..."
+
+if ! command -v qmake6 &> /dev/null; then
+    echo "Error: qmake6 not found. Please install Qt 6 via Homebrew:"
+    echo "  brew install qt@6"
+    exit 1
+fi
+
+if ! command -v brew &> /dev/null; then
+    echo "Warning: Homebrew not found. Build may fail if dependencies are missing."
+fi
+
+mkdir -p build
+cd build
+
+echo "Running qmake..."
+qmake6 "$ROOT/hype.pro" CONFIG+=release
+
+echo "Building..."
+make -j"$(sysctl -n hw.ncpu)"
+
+echo "Creating app bundle..."
+if [ -d hype.app ]; then
+    rm -rf hype.app
+fi
+
+mkdir -p hype.app/Contents/{MacOS,Resources}
+cp "$ROOT/macos/Info.plist" hype.app/Contents/
+if [ -f "$ROOT/macos/hype.icns" ] && [ -s "$ROOT/macos/hype.icns" ]; then
+    cp "$ROOT/macos/hype.icns" hype.app/Contents/Resources/
+fi
+cp hype hype.app/Contents/MacOS/
+
+echo "Running macdeployqt..."
+if command -v macdeployqt6 &> /dev/null; then
+    macdeployqt6 hype.app -qmldir="$ROOT/src"
+elif command -v macdeployqt &> /dev/null; then
+    macdeployqt hype.app -qmldir="$ROOT/src"
+else
+    echo "Warning: macdeployqt not found. The app bundle may not include all Qt dependencies."
+    echo "Install it via: brew install qt@6"
+fi
+
+echo "Ad-hoc signing..."
+codesign --force --deep --sign - hype.app || echo "Warning: Code signing failed (non-fatal)"
+
+echo ""
+echo "Build complete! App bundle created at:"
+echo "  $ROOT/build/hype.app"
+echo ""
+echo "To install locally, run:"
+echo "  cp -r build/hype.app /Applications/"
+echo ""
+echo "To run from the build directory:"
+echo "  open build/hype.app"
+echo "  # or"
+echo "  ./build/hype.app/Contents/MacOS/hype"
