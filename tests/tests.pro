@@ -1,5 +1,4 @@
 QT += core gui qml quick quickcontrols2 multimedia widgets testlib concurrent
-linux: QT += dbus pdf
 CONFIG += c++17 testcase
 TEMPLATE = app
 TARGET = hype-tests
@@ -14,6 +13,7 @@ SOURCES += ../src/pptx.cpp
 HEADERS += ../src/pptx.h
 
 linux {
+    QT += dbus pdf
     LIBS += -lz -lwebpdemux -lwebp
 }
 
