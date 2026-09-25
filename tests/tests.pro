@@ -13,7 +13,6 @@ SOURCES += ../src/pptx.cpp
 HEADERS += ../src/pptx.h
 
 linux {
-    QT += dbus pdf
     LIBS += -lz -lwebpdemux -lwebp
 }
 
