@@ -1,5 +1,6 @@
 #include "syntax.h"
 #include <QCache>
+#include <QFile>
 #include <QMutex>
 #include <QProcess>
 #include <QRegularExpression>

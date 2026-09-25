@@ -1243,7 +1243,9 @@ void Deck::startExport(const QString &format, const QString &path) {
     emit exportChanged();
     auto *process = new QProcess(this);
     m_exportProcess = process;
+#if QT_VERSION >= QT_VERSION_CHECK(6, 9, 0)
     process->setUnixProcessParameters(QProcess::UnixProcessFlag::CreateNewSession);
+#endif
     connect(process, &QProcess::started, this, [this, process] {
         if (m_exportCancelled) stopExport(process);
     });
