@@ -25,15 +25,18 @@ Hype can be built from source on macOS with Qt 6 and Homebrew.
 Install dependencies via Homebrew:
 
 ```sh
-brew install qt@6 ffmpeg source-highlight webp
+brew install qt ffmpeg source-highlight webp
 ```
 
 #### Build and Install
 
 ```sh
 ./bin/build-macos
-cp -r build/hype.app /Applications/
+ditto build/hype.app /Applications/hype.app
+ln -sf /Applications/hype.app/Contents/MacOS/hype "$(brew --prefix)/bin/hype"  # optional CLI
 ```
+
+`bin/build-macos` also writes an ad-hoc signed `build/hype-macos-arm64.zip`. Opening Hype from Finder, the Dock or `open` starts the editor on the last presentation; `hype` without arguments in a terminal prints help, as on Linux.
 
 Or open directly from the build directory:
 
@@ -41,7 +44,7 @@ Or open directly from the build directory:
 open build/hype.app
 ```
 
-Hype on macOS uses native file dialogs and degrades gracefully when Omarchy theme files are not present (falling back to a clean light theme). The app looks for `ffmpeg` and `source-highlight` in Homebrew's standard locations.
+Hype on macOS uses native file dialogs and degrades gracefully when Omarchy theme files are not present (falling back to a clean light theme). The app finds `ffmpeg`, `ffprobe` and `source-highlight` in Homebrew's standard locations even when launched from Finder.
 
 ## Make a presentation
 
@@ -253,7 +256,7 @@ For a launcher entry that rebuilds this checkout when opened, run `./bin/install
 On macOS with Homebrew:
 
 ```sh
-brew install qt@6 ffmpeg source-highlight webp
+brew install qt ffmpeg source-highlight webp
 ./bin/build-macos
 open build/hype.app
 ```
