@@ -24,24 +24,6 @@
 #include <QTimer>
 #include <QWaitCondition>
 
-#ifdef Q_OS_MACOS
-static QString findExecutable(const QString &name) {
-    QProcess which;
-    which.start("which", {name});
-    if (which.waitForFinished(1000) && which.exitCode() == 0) {
-        return QString::fromUtf8(which.readAllStandardOutput().trimmed());
-    }
-    const QString homebrew = qEnvironmentVariable("HOMEBREW_PREFIX", "/opt/homebrew");
-    const QString homebrewPath = homebrew + "/bin/" + name;
-    if (QFile::exists(homebrewPath))
-        return homebrewPath;
-    const QString localPath = "/usr/local/bin/" + name;
-    if (QFile::exists(localPath))
-        return localPath;
-    return name;
-}
-#endif
-
 static QRegularExpression mediaRe(R"(!\[([^\]]*)\]\((?:<([^>]+)>|([^\s)]+))\))");
 namespace {
 class ImageCache {
@@ -273,13 +255,8 @@ static QString createPoster(const QString &video, const QString &base) {
     QTemporaryFile poster(base + "/images/.hype-poster-XXXXXX.jpg");
     if (!poster.open()) return {};
     poster.close();
-#ifdef Q_OS_MACOS
-    static const QString ffmpegPath = findExecutable("ffmpeg");
-#else
-    static const QString ffmpegPath = "ffmpeg";
-#endif
     QProcess ffmpeg;
-    ffmpeg.start(ffmpegPath, {"-v", "error", "-y", "-i", video, "-frames:v", "1", "-vf",
+    ffmpeg.start("ffmpeg", {"-v", "error", "-y", "-i", video, "-frames:v", "1", "-vf",
                             "scale=1280:-2", poster.fileName()});
     if (!ffmpeg.waitForFinished(30000) || ffmpeg.exitCode() != 0) {
         ffmpeg.kill();

@@ -44,14 +44,9 @@ void AppTheme::reload() {
                 values[match.captured(1)] = QColor(match.captured(2));
         }
     }
-#ifdef Q_OS_MACOS
-    const bool useDarkDefaults = false;
-#else
-    const bool useDarkDefaults = true;
-#endif
-    const QColor bg = values.value("background", useDarkDefaults ? QColor("#1a1b26") : QColor("#ffffff"));
-    const QColor fg = values.value("foreground", useDarkDefaults ? QColor("#c0caf5") : QColor("#000000"));
-    const QColor accent = values.value("accent", useDarkDefaults ? QColor("#7aa2f7") : QColor("#0066cc"));
+    const QColor bg = values.value("background", QColor("#1a1b26"));
+    const QColor fg = values.value("foreground", QColor("#c0caf5"));
+    const QColor accent = values.value("accent", QColor("#7aa2f7"));
     const QColor selection = values.value("selection", mix(bg, accent, .3));
     const QVariantMap colors{{"background", bg},
                              {"foreground", fg},
@@ -67,6 +62,7 @@ void AppTheme::reload() {
                              {"accentHover", mix(accent, fg, .15)},
                              {"windowBorder", values.value("active_border_color", accent)},
                              {"error", values.value("red", QColor("#d94b4b"))}};
+    // Popups take the desktop's window corners: square unless the theme rounds them.
     int rounding = 0;
     QStringList windowFiles;
     for (const auto &name : {"/hyprland.lua", "/hyprland.conf"}) {
@@ -86,6 +82,8 @@ void AppTheme::reload() {
         m_rounding = rounding;
         emit changed();
     }
+    // Theme switching replaces symlinks; atomic saves replace file inodes.
+    // Watch their parents as well, and re-arm after every change.
     const QStringList watched = m_watcher.files() + m_watcher.directories();
     if (!watched.isEmpty())
         m_watcher.removePaths(watched);

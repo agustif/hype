@@ -1041,7 +1041,12 @@ class HypeTests : public QObject {
         QCOMPARE(withMedia(examples, replacement), examples + "\n" + replacement + "\n");
     }
     void asynchronousExport() {
+#ifdef Q_OS_MACOS
+        // bin/build-macos builds the app bundle.
+        const QString executable = QFINDTESTDATA("../build/hype.app/Contents/MacOS/hype");
+#else
         const QString executable = QFINDTESTDATA("../build/hype");
+#endif
         QVERIFY(!executable.isEmpty());
         QTemporaryDir tmp;
         Deck deck(nullptr, executable);

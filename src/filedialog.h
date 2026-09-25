@@ -11,6 +11,7 @@ class FileDialog : public QObject {
   public:
     static QString choose(bool save, const QString &location, const QString &label,
                           const QStringList &patterns, QString *error);
+#ifdef Q_OS_LINUX
   private slots:
     void response(uint result, const QVariantMap &values);
   private:
@@ -20,4 +21,5 @@ class FileDialog : public QObject {
     QEventLoop m_loop;
     QString m_request, m_file, m_error;
     bool m_done = false;
+#endif
 };

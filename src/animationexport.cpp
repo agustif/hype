@@ -10,24 +10,6 @@
 #include <memory>
 #include <webp/demux.h>
 
-#ifdef Q_OS_MACOS
-static QString findExecutable(const QString &name) {
-    QProcess which;
-    which.start("which", {name});
-    if (which.waitForFinished(1000) && which.exitCode() == 0) {
-        return QString::fromUtf8(which.readAllStandardOutput().trimmed());
-    }
-    const QString homebrew = qEnvironmentVariable("HOMEBREW_PREFIX", "/opt/homebrew");
-    const QString homebrewPath = homebrew + "/bin/" + name;
-    if (QFile::exists(homebrewPath))
-        return homebrewPath;
-    const QString localPath = "/usr/local/bin/" + name;
-    if (QFile::exists(localPath))
-        return localPath;
-    return name;
-}
-#endif
-
 bool exportAnimation(const QString &source, const QString &base, const QVariantMap &palette,
                      const QString &output, int width, int *repeats, QString *error,
                      const std::function<void(double)> &progress) {
@@ -70,13 +52,11 @@ bool exportAnimation(const QString &source, const QString &base, const QVariantM
         paintSlide(&op, overlay.rect(), source, base, palette, nullptr, true);
     }
     const QRectF rect = mediaRect(media);
-#ifdef Q_OS_MACOS
-    static const QString ffmpegPath = findExecutable("ffmpeg");
-#else
-    static const QString ffmpegPath = "ffmpeg";
-#endif
+    // Feed a bounded raw-frame pipe: no directory of full-size PNGs and no
+    // complete animation in memory. Quantize cumulative timestamps to the same
+    // 60 Hz output clock used by PowerPoint exports, avoiding per-frame drift.
     QProcess encoder;
-    encoder.start(ffmpegPath, {"-v",
+    encoder.start("ffmpeg", {"-v",
                              "error",
                              "-nostdin",
                              "-y",

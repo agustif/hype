@@ -1,6 +1,5 @@
 #include "syntax.h"
 #include <QCache>
-#include <QFile>
 #include <QMutex>
 #include <QProcess>
 #include <QRegularExpression>
@@ -31,26 +30,8 @@ static QString highlightedHtml(const QString &source, QString language) {
             return *html;
         pending.insert(key);
     }
-#ifdef Q_OS_MACOS
-    static const QString program = [] {
-        QProcess which;
-        which.start("which", {"source-highlight"});
-        if (which.waitForFinished(1000) && which.exitCode() == 0) {
-            return QString::fromUtf8(which.readAllStandardOutput().trimmed());
-        }
-        const QString homebrew = qEnvironmentVariable("HOMEBREW_PREFIX", "/opt/homebrew");
-        const QString homebrewPath = homebrew + "/bin/source-highlight";
-        if (QFile::exists(homebrewPath))
-            return homebrewPath;
-        if (QFile::exists("/usr/local/bin/source-highlight"))
-            return QString("/usr/local/bin/source-highlight");
-        return QString("source-highlight");
-    }();
-#else
-    static const QString program = "source-highlight";
-#endif
     QProcess process;
-    process.start(program, {"--src-lang=" + language, "--out-format=html-css"});
+    process.start("source-highlight", {"--src-lang=" + language, "--out-format=html-css"});
     QString html;
     if (process.waitForStarted(1000)) {
         process.write(source.toUtf8());
