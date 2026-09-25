@@ -1,5 +1,6 @@
 QT += core gui qml quick quickcontrols2 multimedia concurrent
 linux: QT += dbus
+macx: QT += widgets
 # Like Qt's own modules, Hype never throws or catches. Without unwinding tables and with
 # link-time optimization, the installed binary is about a quarter smaller.
 CONFIG += c++17 release ltcg exceptions_off
