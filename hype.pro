@@ -33,6 +33,7 @@ macx {
     
     INCLUDEPATH += $$HOMEBREW_PREFIX/include
     LIBS += -L$$HOMEBREW_PREFIX/lib -lz -lwebpdemux -lwebp
+    LIBS += -framework CoreFoundation
     
     # App bundle configuration
     QMAKE_INFO_PLIST = macos/Info.plist

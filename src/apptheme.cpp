@@ -44,9 +44,15 @@ void AppTheme::reload() {
                 values[match.captured(1)] = QColor(match.captured(2));
         }
     }
-    const QColor bg = values.value("background", QColor("#1a1b26"));
-    const QColor fg = values.value("foreground", QColor("#c0caf5"));
-    const QColor accent = values.value("accent", QColor("#7aa2f7"));
+    // Without an Omarchy theme, Linux keeps Tokyo Night; macOS starts light.
+#ifdef Q_OS_MACOS
+    const bool useDarkDefaults = false;
+#else
+    const bool useDarkDefaults = true;
+#endif
+    const QColor bg = values.value("background", useDarkDefaults ? QColor("#1a1b26") : QColor("#ffffff"));
+    const QColor fg = values.value("foreground", useDarkDefaults ? QColor("#c0caf5") : QColor("#000000"));
+    const QColor accent = values.value("accent", useDarkDefaults ? QColor("#7aa2f7") : QColor("#0066cc"));
     const QColor selection = values.value("selection", mix(bg, accent, .3));
     const QVariantMap colors{{"background", bg},
                              {"foreground", fg},
