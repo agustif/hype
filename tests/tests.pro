@@ -1,5 +1,5 @@
-QT += core gui qml quick quickcontrols2 multimedia widgets testlib pdf concurrent
-linux: QT += dbus
+QT += core gui qml quick quickcontrols2 multimedia widgets testlib concurrent
+linux: QT += dbus pdf
 CONFIG += c++17 testcase
 TEMPLATE = app
 TARGET = hype-tests

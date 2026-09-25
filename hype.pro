@@ -37,9 +37,6 @@ macx {
     # App bundle configuration
     QMAKE_INFO_PLIST = macos/Info.plist
     ICON = macos/hype.icns
-    
-    # macdeployqt needs this
-    QMAKE_POST_LINK += install_name_tool -add_rpath @executable_path/../Frameworks $(TARGET)
 }
 
 SOURCES += src/animationexport.cpp
